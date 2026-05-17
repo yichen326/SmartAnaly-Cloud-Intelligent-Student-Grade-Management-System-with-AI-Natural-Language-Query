@@ -1,1120 +1,2747 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+智析云途 - AI智能学生成绩管理系统 (完全重写版 v2.0)
+======================================================
+基于 PyQt5 + DeepSeek API + SQLite3
+学号标准: 8位 GGCCNNNN (2位年级+2位班级+4位顺序号)
+  年级: 01=高一, 02=高二, 03=高三
+  班级: 01-30
+  顺序号: 0001-9999
+"""
+
 import sys
-import re
 import os
-import sqlite3
-import hashlib
-import threading
+import re
 import json
-import requests
-from openpyxl import Workbook
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import *
-from PyQt5.QtGui import *
+import random
+import sqlite3
+import threading
+import time
+import traceback
+from datetime import datetime
+from typing import Optional, Tuple, List, Dict, Any
 
-# ===================== 火山方舟配置 =====================
-ARK_API_KEY = "ark-30711e25-3b33-4893-81ea-3807b4613a59-6a7b3"
-EP_ID = "ep-20260513194638-8qdxg"
-ARK_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+# ===================== PyQt5 导入 =====================
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QTextEdit, QLineEdit, QLabel, QDialog, QFormLayout,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QComboBox,
+    QSplitter, QFrame, QGridLayout, QGroupBox,
+    QDialogButtonBox, QFileDialog, QTabWidget, QSizePolicy,
+    QAbstractItemView, QStatusBar, QMenu, QAction, QInputDialog
+)
+from PyQt5.QtCore import (
+    Qt, QThread, pyqtSignal, QSize, QTimer, QUrl, QPoint
+)
+from PyQt5.QtGui import (
+    QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap,
+    QBrush, QTextCharFormat, QDoubleValidator, QIntValidator,
+    QCursor
+)
 
-DB_NAME = "school_final.db"
-EXCEL_PATH = os.path.join(os.getcwd(), "学生成绩管理系统.xlsx")
+# ===================== API 导入 =====================
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
 
-# ===================== 学号标准 =====================
-# 学号格式：GGCCNNNN（8位数字）
-# GG = 年级代码：01=高一, 02=高二, 03=高三
-# CC = 班级编号：01~30
-# NNNN = 顺序号：0001~9999
-#
-# 示例：01010001 = 高一1班第1号学生
-#       02020015 = 高二2班第15号学生
+# ===================== 配置区 =====================
 
-GRADE_MAP = {"01": "高一", "02": "高二", "03": "高三"}
-GRADE_REVERSE_MAP = {"高一": "01", "高二": "02", "高三": "03"}
+DEEPSEEK_API_KEY = "sk-032f75440f6542d690f9ccc523b01cd3"
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"
 
-def validate_student_id(sid):
-    """验证学号格式，返回 (是否合法, 错误信息, 年级, 班级)"""
-    if not sid or not isinstance(sid, str):
-        return False, "学号不能为空", "", ""
-    
-    # 检查是否为纯数字
-    if not sid.isdigit():
-        return False, "学号必须为纯数字", "", ""
-    
-    # 检查长度
-    if len(sid) != 8:
-        return False, "学号必须为8位数字（格式：GGCCNNNN，如01010001）", "", ""
-    
-    grade_code = sid[:2]
-    class_code = sid[2:4]
-    seq_num = sid[4:]
-    
-    # 检查年级代码
-    if grade_code not in GRADE_MAP:
-        return False, f"年级代码错误：{grade_code}，应为01(高一)、02(高二)、03(高三)", "", ""
-    
-    # 检查班级编号
-    class_num = int(class_code)
-    if class_num < 1 or class_num > 30:
-        return False, f"班级编号错误：{class_code}，范围应为01~30", "", ""
-    
-    # 检查顺序号
-    seq_num_int = int(seq_num)
-    if seq_num_int < 1 or seq_num_int > 9999:
-        return False, f"顺序号错误：{seq_num}，范围应为0001~9999", "", ""
-    
-    grade = GRADE_MAP[grade_code]
-    class_full = f"{grade}{int(class_code)}班"
-    
-    return True, "", grade, class_full
+GRADE_NAMES = {"01": "高一", "02": "高二", "03": "高三"}
+GRADE_CODES = {"高一": "01", "高二": "02", "高三": "03"}
 
+GRADE_LEVELS = [
+    (90, 100, "优秀", "★"),
+    (80, 89,  "良好", "✓"),
+    (70, 79,  "中等", "●"),
+    (60, 69,  "及格", "△"),
+    (0, 59,   "不及格", "▲")
+]
 
-# ===================== 火山方舟豆包AI =====================
-class DoubaoAI:
-    def __init__(self):
-        self.headers = {
-            "Authorization": f"Bearer {ARK_API_KEY}",
-            "Content-Type": "application/json"
+SUBJECTS = ["语文", "数学", "英语", "物理", "化学", "生物"]
+SUBJECT_FIELDS = ["chinese", "math", "english", "physics", "chemistry", "biology"]
+
+DATA_FILE = "students_data.txt"
+DB_FILE = "school_final.db"
+
+# ===================== 学号校验 =====================
+
+class StudentIDValidator:
+    """学号校验器 - 8位格式 GGCCNNNN"""
+    
+    STUDENT_ID_PATTERN = r"^(01|02|03)(0[1-9]|[12]\d|30)\d{4}$"
+    
+    @staticmethod
+    def parse(student_id: str) -> Tuple[bool, Any]:
+        """校验并解析学号"""
+        student_id = student_id.strip()
+        
+        if not student_id.isdigit():
+            return False, "学号必须为纯数字！"
+        if len(student_id) != 8:
+            return False, f"学号长度应为8位，当前为{len(student_id)}位！\n格式: 2位年级+2位班级+4位序号"
+        if not re.match(StudentIDValidator.STUDENT_ID_PATTERN, student_id):
+            return False, (f"学号格式不正确！\n年级: 01=高一, 02=高二, 03=高三\n班级: 01-30\n序号: 0001-9999\n示例: 01010001")
+        
+        grade_code = student_id[:2]
+        class_code = student_id[2:4]
+        serial = student_id[4:]
+        grade_name = GRADE_NAMES.get(grade_code, f"{grade_code}年级")
+        
+        return True, {
+            "student_id": student_id,
+            "grade_code": grade_code,
+            "class_code": class_code,
+            "grade_name": grade_name,
+            "display": f"{grade_name}{class_code}班{serial}号"
         }
-        self.last_input = ""
-        self.last_response = ""
 
-    def call_api(self, messages, temperature=0.7, max_tokens=1024):
-        """调用火山方舟API"""
-        payload = {
-            "model": EP_ID,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
+# ===================== 数据库模块 =====================
+
+class Database:
+    """数据库管理类"""
+    
+    def __init__(self, db_name=DB_FILE):
+        self.db_name = db_name
+        self.conn = None
+        self.c = None
+        self._connect()
+        self._create_tables()
+    
+    def _connect(self):
+        self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.c = self.conn.cursor()
+    
+    def _create_tables(self):
+        """创建标准表结构"""
+        self.c.executescript('''
+            CREATE TABLE IF NOT EXISTS students (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                gender TEXT CHECK(gender IN ('男','女')),
+                grade_code TEXT NOT NULL DEFAULT '01',
+                class_code TEXT NOT NULL DEFAULT '01',
+                chinese REAL DEFAULT 0,
+                math REAL DEFAULT 0,
+                english REAL DEFAULT 0,
+                physics REAL DEFAULT 0,
+                chemistry REAL DEFAULT 0,
+                biology REAL DEFAULT 0,
+                total_score REAL DEFAULT 0,
+                class_rank INTEGER DEFAULT -1,
+                grade_rank INTEGER DEFAULT -1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        ''')
+        self.conn.commit()
+    
+    def load_from_txt(self, filepath=DATA_FILE):
+        """从txt文件加载数据"""
+        if not os.path.exists(filepath):
+            return 0
+        
+        count = 0
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                parts = line.split('|')
+                if len(parts) < 9:
+                    continue
+                
+                student_id = parts[0].strip()
+                name = parts[1].strip()
+                gender = parts[2].strip()
+                
+                if gender not in ('男', '女'):
+                    gender = '男'
+                
+                try:
+                    scores = [float(p.strip()) for p in parts[3:9]]
+                except ValueError:
+                    continue
+                
+                if len(scores) != 6:
+                    continue
+                
+                valid, info = StudentIDValidator.parse(student_id)
+                if not valid:
+                    continue
+                
+                total = sum(scores)
+                try:
+                    self.execute("""
+                        INSERT OR IGNORE INTO students 
+                        (student_id, name, gender, grade_code, class_code,
+                         chinese, math, english, physics, chemistry, biology, total_score)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (student_id, name, gender, info["grade_code"], info["class_code"],
+                          scores[0], scores[1], scores[2], scores[3], scores[4], scores[5], total))
+                    if self.c.rowcount > 0:
+                        count += 1
+                except Exception:
+                    continue
+        
+        if count > 0:
+            self.update_all_ranks()
+        
+        return count
+    
+    def execute(self, sql, params=()):
+        self.c.execute(sql, params)
+        self.conn.commit()
+    
+    def fetchall(self, sql, params=()):
+        self.c.execute(sql, params)
+        return self.c.fetchall()
+    
+    def fetchone(self, sql, params=()):
+        self.c.execute(sql, params)
+        return self.c.fetchone()
+    
+    def close(self):
+        if self.conn:
+            self.conn.close()
+    
+    def get_available_grades(self) -> List[str]:
+        """获取数据库中有数据的年级代码列表"""
+        rows = self.fetchall("SELECT DISTINCT grade_code FROM students ORDER BY grade_code")
+        return [r["grade_code"] for r in rows]
+    
+    def get_available_classes(self, grade_code=None) -> List[str]:
+        """获取数据库中指定年级（或全部）的班级代码列表"""
+        if grade_code:
+            rows = self.fetchall(
+                "SELECT DISTINCT class_code FROM students WHERE grade_code=? ORDER BY class_code",
+                (grade_code,)
+            )
+        else:
+            rows = self.fetchall("SELECT DISTINCT class_code FROM students ORDER BY class_code")
+        return [r["class_code"] for r in rows]
+    
+    def update_all_ranks(self):
+        """更新所有排名 (try/except保护)"""
         try:
-            resp = requests.post(ARK_URL, headers=self.headers, json=payload, timeout=30)
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"]
+            # 班级排名
+            class_groups = self.fetchall(
+                "SELECT DISTINCT grade_code, class_code FROM students"
+            )
+            for group in class_groups:
+                rows = self.fetchall(
+                    "SELECT id FROM students WHERE grade_code=? AND class_code=? ORDER BY total_score DESC",
+                    (group["grade_code"], group["class_code"])
+                )
+                for i, row in enumerate(rows, 1):
+                    self.execute("UPDATE students SET class_rank=? WHERE id=?", (i, row["id"]))
+            
+            # 年级排名
+            grade_groups = self.fetchall("SELECT DISTINCT grade_code FROM students")
+            for group in grade_groups:
+                rows = self.fetchall(
+                    "SELECT id FROM students WHERE grade_code=? ORDER BY total_score DESC",
+                    (group["grade_code"],)
+                )
+                for i, row in enumerate(rows, 1):
+                    self.execute("UPDATE students SET grade_rank=? WHERE id=?", (i, row["id"]))
+        except Exception as e:
+            print(f"[排名更新] 出错: {e}")
+
+# ===================== 成绩评估模块 =====================
+
+class GradeEvaluator:
+    """成绩评估与分析模块"""
+    
+    @staticmethod
+    def get_grade_level(score: float) -> Tuple[str, str]:
+        for low, high, level, emoji in GRADE_LEVELS:
+            if low <= score <= high:
+                return level, emoji
+        return "未知", "?"
+    
+    @staticmethod
+    def evaluate_student(student) -> Dict:
+        """评估单个学生"""
+        subjects_data = [
+            ("语文", student["chinese"]),
+            ("数学", student["math"]),
+            ("英语", student["english"]),
+            ("物理", student["physics"]),
+            ("化学", student["chemistry"]),
+            ("生物", student["biology"])
+        ]
+        
+        total = student["total_score"]
+        avg = total / 6
+        level, emoji = GradeEvaluator.get_grade_level(avg)
+        
+        strong = []
+        weak = []
+        details = []
+        for name, score in subjects_data:
+            lv, em = GradeEvaluator.get_grade_level(score)
+            details.append({"subject": name, "score": score, "level": lv, "emoji": em})
+            if lv == "优秀":
+                strong.append(name)
+            elif lv == "不及格":
+                weak.append(name)
+        
+        comments = []
+        if strong:
+            comments.append(f"优势科目: {'、'.join(strong)}，继续保持！")
+        if weak:
+            comments.append(f"待加强科目: {'、'.join(weak)}，建议多花时间复习。")
+        if level == "优秀":
+            comments.append("总评优秀，非常出色！继续加油！")
+        elif level == "良好":
+            comments.append("总评良好，还有提升空间，继续努力！")
+        elif level == "中等":
+            comments.append("总评中等，制定学习计划争取进步！")
+        elif level == "及格":
+            comments.append("总评及格，需要更加努力！")
+        else:
+            comments.append("总评偏低，建议调整学习方法，寻求帮助！")
+        
+        return {
+            "name": student["name"],
+            "student_id": student["student_id"],
+            "grade": f"{GRADE_NAMES.get(student['grade_code'], student['grade_code'])}{student['class_code']}班",
+            "total": total,
+            "average": round(avg, 1),
+            "level": level,
+            "emoji": emoji,
+            "class_rank": student["class_rank"],
+            "grade_rank": student["grade_rank"],
+            "strong_subjects": strong,
+            "weak_subjects": weak,
+            "details": details,
+            "comments": " ".join(comments)
+        }
+    
+    @staticmethod
+    def evaluate_class(db: Database, grade_code: str, class_code: str) -> Optional[Dict]:
+        """评估班级"""
+        students = db.fetchall(
+            "SELECT * FROM students WHERE grade_code=? AND class_code=? ORDER BY total_score DESC",
+            (grade_code, class_code)
+        )
+        if not students:
+            return None
+        
+        count = len(students)
+        total_sum = sum(s["total_score"] for s in students)
+        class_avg = round(total_sum / count, 1)
+        
+        subject_avgs = {}
+        for sname, sfield in zip(SUBJECTS, SUBJECT_FIELDS):
+            avg_val = round(sum(s[sfield] for s in students) / count, 1)
+            subject_avgs[sname] = avg_val
+        
+        level_dist = {"优秀": 0, "良好": 0, "中等": 0, "及格": 0, "不及格": 0}
+        for s in students:
+            avg_score = s["total_score"] / 6
+            lv, _ = GradeEvaluator.get_grade_level(avg_score)
+            level_dist[lv] = level_dist.get(lv, 0) + 1
+        
+        max_total = max(s["total_score"] for s in students)
+        min_total = min(s["total_score"] for s in students)
+        max_s = [s for s in students if s["total_score"] == max_total][0]
+        min_s = [s for s in students if s["total_score"] == min_total][0]
+        
+        grade_name = GRADE_NAMES.get(grade_code, f"{grade_code}年级")
+        
+        return {
+            "grade": f"{grade_name}{class_code}班",
+            "grade_code": grade_code,
+            "class_code": class_code,
+            "student_count": count,
+            "class_avg": class_avg,
+            "subject_averages": subject_avgs,
+            "level_distribution": level_dist,
+            "max_score": max_total,
+            "max_student": max_s["name"],
+            "min_score": min_total,
+            "min_student": min_s["name"],
+            "pass_count": sum(1 for s in students if s["total_score"] >= 360),
+            "excellent_count": sum(1 for s in students if s["total_score"] / 6 >= 90),
+        }
+    
+    @staticmethod
+    def evaluate_grade(db: Database, grade_code: str) -> Optional[Dict]:
+        """评估年级"""
+        classes = db.fetchall(
+            "SELECT DISTINCT class_code FROM students WHERE grade_code=? ORDER BY class_code",
+            (grade_code,)
+        )
+        
+        results = []
+        for cls in classes:
+            result = GradeEvaluator.evaluate_class(db, grade_code, cls["class_code"])
+            if result:
+                results.append(result)
+        
+        if not results:
+            return None
+        
+        total_students = sum(r["student_count"] for r in results)
+        all_avgs = [r["class_avg"] for r in results]
+        grade_avg = round(sum(all_avgs) / len(all_avgs), 1) if all_avgs else 0
+        
+        return {
+            "grade_code": grade_code,
+            "grade_name": GRADE_NAMES.get(grade_code, f"{grade_code}年级"),
+            "total_students": total_students,
+            "class_count": len(results),
+            "grade_avg": grade_avg,
+            "classes": results
+        }
+
+# ===================== DeepSeek AI 模块 =====================
+
+class DeepSeekAI:
+    """DeepSeek API 调用封装"""
+    
+    def __init__(self, api_key: str = DEEPSEEK_API_KEY):
+        self.api_key = api_key
+        self.api_url = DEEPSEEK_API_URL
+        self.model = DEEPSEEK_MODEL
+        self.available = REQUESTS_AVAILABLE and bool(api_key)
+    
+    def chat(self, messages: List[Dict], temperature: float = 0.7, max_tokens: int = 1000) -> Optional[str]:
+        if not self.available:
+            return None
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False
+            }
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
             else:
+                print(f"[DeepSeek API] 错误: {response.status_code} {response.text[:200]}")
                 return None
         except Exception as e:
+            print(f"[DeepSeek API] 异常: {e}")
             return None
+    
+    def get_system_prompt(self, db_context: str) -> str:
+        return f"""你是一个智能学生成绩管理系统的AI助手"智析云途"。
 
-    def preprocess_input(self, text):
-        if not text:
-            return ""
-        
-        text = text.strip()
-        text = re.sub(r'[\s\u3000\u00A0]+', ' ', text)
-        text = re.sub(r'[，。！？、；：""()（）【】《》]', '', text)
-        text = re.sub(r'[^\w\u4e00-\u9fa5|\s]', '', text)
-        text = text.strip()
-        
-        return text
+当前系统数据库包含以下数据：
+{db_context}
 
-    def parse_intent(self, user_text):
-        """解析用户意图，返回标准指令或 'unknown' 或分析类指令"""
-        text = self.preprocess_input(user_text)
-        if not text:
-            return "unknown"
+你的能力：
+1. 回答关于成绩数据的各种问题 - 基于提供的数据库上下文回答
+2. 分析班级/年级成绩 - 给出专业的教育评估
+3. 提供个性化学习建议
+4. 进行日常对话 - 像朋友一样自然交流
 
-        # 固定指令：修改/更新成绩
-        if text.startswith("update|") or text.startswith("修改|"):
-            parts = text.split("|")
-            if len(parts) >= 4:
-                name = parts[1] if parts[0].startswith("update") else parts[1]
-                subject = parts[2] if parts[0].startswith("update") else parts[2]
-                score = parts[3] if parts[0].startswith("update") else parts[3]
-                return f"update|{name}|{subject}|{score}"
-            return "unknown"
+回答要求：
+- 数据相关问题请基于系统数据给出准确分析
+- 非数据问题（日常聊天）请友好自然地回复
+- 语气温暖、鼓励、专业
+- 适当使用表情符号让回复更生动"""
 
-        # 固定指令：删除
-        if text.startswith("delete|") or text.startswith("删除|"):
-            parts = text.split("|")
-            name = parts[1] if len(parts) >= 2 else ""
-            return f"delete|{name}"
+    def build_context(self, db: Database) -> str:
+        try:
+            total = db.fetchone("SELECT COUNT(*) as cnt FROM students")
+            count = total["cnt"] if total else 0
+            if count == 0:
+                return "（系统中暂无学生数据）"
+            
+            grade_classes = db.fetchall(
+                "SELECT grade_code, class_code, COUNT(*) as cnt FROM students GROUP BY grade_code, class_code"
+            )
+            lines = [f"共有 {count} 名学生"]
+            grade_summary = {}
+            for gc in grade_classes:
+                gn = GRADE_NAMES.get(gc["grade_code"], gc["grade_code"])
+                key = f"{gn}({gc['grade_code']})"
+                if key not in grade_summary:
+                    grade_summary[key] = {"total": 0, "classes": set()}
+                grade_summary[key]["total"] += gc["cnt"]
+                grade_summary[key]["classes"].add(gc["class_code"])
+            for gn, info in grade_summary.items():
+                lines.append(f"- {gn}: {info['total']}人, {len(info['classes'])}个班级")
+            
+            stats = db.fetchone("SELECT AVG(total_score) as avg_s, MIN(total_score) as min_s, MAX(total_score) as max_s FROM students")
+            if stats and stats["avg_s"]:
+                lines.append(f"总分范围: {stats['min_s']:.0f} - {stats['max_s']:.0f}, 平均分: {stats['avg_s']:.1f}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"（获取数据上下文时出错: {e}）"
 
-        # 固定指令：导出
-        if "导出" in text and ("excel" in text.lower() or "表格" in text or "文件" in text):
-            return "export_excel"
 
-        # ===== 分析类指令 =====
-        # 分析xx班成绩 / 分析xx年级成绩 / 分析某科成绩
-        analyze_patterns = [
-            r"分析(.{2,20})班(?:的)?(?:成绩)?",
-            r"分析(.{2,20})年级(?:的)?(?:成绩)?",
-            r"(.{2,20})班(?:的)?成绩(?:怎么|如何|分析)?",
-            r"(.{2,20})年级(?:的)?成绩(?:怎么|如何|分析)?",
-            r"看看(.{2,20})班(?:的)?(?:成绩)?",
-            r"看看(.{2,20})年级(?:的)?(?:成绩)?",
-            r"成绩分析(.{2,20})?",
-            r"分析(?:一下)?(.{2,10})(?:的)?(语文|数学|英语|物理)?(?:成绩)?",
+# ===================== AI 智能问答引擎 =====================
+
+class AIChatEngine:
+    """AI智能问答引擎"""
+    
+    FUNCTION_KEYWORDS = {
+        "menu": ["菜单", "功能", "帮助", "help", "支持", "可以做什么", "使用方法", "有哪些功能"],
+        "show_all": ["所有学生", "全部学生", "列表", "学生列表", "查看所有", "显示全部", "显示所有", "所有同学", "全部同学"],
+        "add": ["添加", "新增", "录入", "加入", "增加学生", "添加学生", "录入学生", "新学生"],
+        "delete": ["删除", "移除", "清除", "注销", "删除学生"],
+        "update": ["修改", "更新", "编辑", "更改", "调整", "修改成绩", "改成绩"],
+        "rank_total": ["总分排名", "全校排名", "总排名", "成绩排名", "排名榜"],
+        "rank_class": ["班级排名", "班排名", "班里排名", "班级名次"],
+        "rank_grade": ["年级排名", "级排名", "年级名次"],
+        "rank_subject": ["数学排名", "语文排名", "英语排名", "物理排名", "化学排名", "生物排名", "单科排名", "学科排名"],
+        "evaluate_class": ["分析班", "评估班", "班级分析", "班级评估", "班级成绩", "班怎么样"],
+        "evaluate_grade": ["分析年级", "评估年级", "年级分析", "年级评估", "年级成绩"],
+        "evaluate_student": ["评估", "评价", "分析学生", "学生评估", "学生分析", "学习评估"],
+        "stats": ["统计", "概览", "概况", "汇总", "报表", "系统统计"],
+        "export_excel": ["导出", "导出excel", "excel", "导出表格", "下载"],
+        "table": ["查看表格", "数据表格", "编辑表格", "表格视图", "打开表格"],
+        "greeting": ["你好", "您好", "hi", "hello", "嗨", "hey", "早上好", "晚上好", "下午好"],
+        "thanks": ["谢谢", "感谢", "多谢", "thanks", "thank", "辛苦了"],
+        "exit": ["退出", "exit", "quit", "再见", "拜拜", "bye", "关机"],
+    }
+    
+    def __init__(self, db: Database):
+        self.db = db
+        self.deepseek = DeepSeekAI()
+        self.greetings = [
+            "你好！我是智析云途AI助手，很高兴为你服务！\n\n试试说「菜单」查看所有功能，或直接输入问题~",
+            "欢迎使用智析云途学生成绩管理系统！有什么可以帮助你的吗？",
+            "你好呀！需要查询成绩还是做分析评估？我都可以帮你~"
         ]
-        for pattern in analyze_patterns:
-            m = re.search(pattern, text)
+    
+    def fuzzy_match(self, text: str, keywords: List[str]) -> bool:
+        text = text.replace(" ", "").lower()
+        for kw in keywords:
+            if kw.lower() in text:
+                return True
+        return False
+    
+    def extract_student_info(self, text: str) -> Tuple[Optional[str], Optional[str]]:
+        # 8位学号
+        m = re.search(r'\b(\d{8})\b', text)
+        if m:
+            return "student_id", m.group(1)
+        # 姓名 (2-4个中文字符)
+        m = re.search(r'[\u4e00-\u9fa5]{2,4}', text)
+        if m:
+            name = m.group(0)
+            exclude = {"查询", "查找", "搜索", "添加", "新增", "删除", "修改",
+                       "更新", "统计", "评估", "分析", "排名", "录入", "移除",
+                       "退出", "菜单", "帮助", "列表", "名单", "学生", "成绩",
+                       "老师", "同学", "班级", "年级", "我们", "你们", "他们",
+                       "今天", "明天", "所有", "全部", "查看", "了解", "介绍",
+                       "功能", "支持", "加油", "努力", "导出", "表格", "数据",
+                       "系统", "学校", "科目", "语文", "数学", "英语", "物理",
+                       "化学", "生物", "考试", "学习",
+                       "建议", "点评", "总结", "报告", "显示", "打印", "保存",
+                       "编辑", "搜索", "筛选", "排序",
+                       "哪个", "什么", "怎么", "如何", "为什么", "多少",
+                       "优秀", "良好", "中等", "及格", "不及格"}
+            if name not in exclude:
+                return "name", name
+        return None, None
+    
+    def extract_class_info(self, text: str) -> Tuple[Optional[str], Optional[str]]:
+        """提取班级信息，返回 (grade_code, class_code)"""
+        for gname, gcode in GRADE_CODES.items():
+            m = re.search(rf'{gname}\s*(\d{{1,2}})\s*班', text)
             if m:
-                target = m.group(1).strip() if m.lastindex >= 1 else ""
-                subject = m.group(2).strip() if m.lastindex >= 2 else ""
-                return f"analyze|{target}|{subject}"
-
-        # 固定指令：显示所有学生
-        if "显示" in text and "学生" in text:
-            return "show_all"
-        if "所有" in text and "学生" in text:
-            return "show_all"
-        if "全部" in text and "学生" in text:
-            return "show_all"
-        if "学生" in text and ("列表" in text or "名单" in text):
-            return "show_all"
-
-        # 固定指令：排名
-        if "排名" in text or "排行" in text:
-            # 班级排名
-            class_rank_match = re.search(r"(\d+)班(?:的)?(.{0,4})排名", text)
-            if class_rank_match:
-                class_num = class_rank_match.group(1)
-                subj = class_rank_match.group(2).strip()
-                return f"class_rank|{class_num}班|{subj}"
-
-            # 年级排名
-            grade_rank_match = re.search(r"(高一|高二|高三)(?:的)?(.{0,4})排名", text)
-            if grade_rank_match:
-                grade_str = grade_rank_match.group(1)
-                subj = grade_rank_match.group(2).strip()
-                return f"grade_rank|{grade_str}|{subj}"
-
-            if "总分" in text or "总排" in text:
-                return "rank_total"
-            if "语文" in text:
-                return "rank_chinese"
-            if "数学" in text:
-                return "rank_math"
-            if "英语" in text:
-                return "rank_english"
-            if "物理" in text:
-                return "rank_physics"
-            if "班级" in text:
-                return "rank_total"
-            return "rank_total"
-
-        # 固定指令：修改成绩（自然语言解析）
-        m = re.search(r"(?:修改|更改|更新)?\s*([^的]+?)的?([语文数学英语物理]+)成绩(?:为|到|成|是)?(\d{1,3})", text)
+                return gcode, m.group(1).zfill(2)
+        # 尝试单独提取班级编号
+        m = re.search(r'(0?[1-9]|[12]\d|30)\s*班', text)
         if m:
-            name = m.group(1).strip()
-            subject = m.group(2).strip()
-            score = m.group(3)
-            return f"update|{name}|{subject}|{score}"
-
-        # 固定指令：删除学生
-        m = re.search(r"删除\s*([^\s]+)", text)
-        if m:
-            name = m.group(1).strip()
-            return f"delete|{name}"
-
-        # 固定指令：添加学生
-        add_match = re.search(r"添加学生\s*(\S+)\s*(\S+)\s*(\S+)\s*(\S+)", text)
-        if add_match:
-            sid = add_match.group(1)
-            name = add_match.group(2)
-            gender = add_match.group(3)
-            yw = add_match.group(4)
-            return f"add_student|{sid}|{name}|{gender}|{yw}"
-
-        # 默认规则兜底
-        if "显示" in text or "查看" in text:
-            return "show_all"
-
-        return "unknown"
-
-
-# ===================== 数据库（完整功能 + 20名学生初始化） =====================
-class Database:
-    def __init__(self):
-        self.conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-        self.cur = self.conn.cursor()
-        self.init_tables()
-        self.init_20_students()
-
-    def init_tables(self):
-        # 重新建表：添加 grade 字段
-        self.cur.execute('''CREATE TABLE IF NOT EXISTS student (
-            sid TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            gender TEXT,
-            grade TEXT,
-            class TEXT
-        )''')
-        self.cur.execute('''CREATE TABLE IF NOT EXISTS score (
-            sid TEXT PRIMARY KEY,
-            语文 REAL DEFAULT 0,
-            数学 REAL DEFAULT 0,
-            英语 REAL DEFAULT 0,
-            物理 REAL DEFAULT 0,
-            总分 REAL DEFAULT 0,
-            平均分 REAL DEFAULT 0
-        )''')
-        self.cur.execute('''CREATE TABLE IF NOT EXISTS user (
-            username TEXT PRIMARY KEY,
-            password TEXT
-        )''')
-        pwd = hashlib.md5("123456".encode()).hexdigest()
-        self.cur.execute("REPLACE INTO user VALUES (?,?)", ("admin", pwd))
-        self.conn.commit()
-
-    def init_20_students(self):
-        # 检查是否已有数据
-        existing = self.cur.execute("SELECT COUNT(*) FROM student").fetchone()[0]
-        if existing >= 20:
-            return
-        
-        # 清空旧数据
-        self.cur.execute("DELETE FROM student")
-        self.cur.execute("DELETE FROM score")
-        
-        # 分布在不同年级/班级的学生数据
-        # 格式: (学号, 姓名, 性别, 年级, 班级全名, 语文, 数学, 英语, 物理)
-        students = [
-            # === 高一1班（10人）===
-            ("01010001", "张三",   "男", "高一", "高一1班", 80, 85, 90, 95),
-            ("01010002", "李四",   "女", "高一", "高一1班", 78, 82, 88, 90),
-            ("01010003", "王五",   "男", "高一", "高一1班", 92, 76, 85, 80),
-            ("01010004", "赵六",   "男", "高一", "高一1班", 65, 95, 70, 75),
-            ("01010005", "钱七",   "女", "高一", "高一1班", 85, 60, 92, 88),
-            ("01010006", "孙八",   "男", "高一", "高一1班", 70, 78, 80, 82),
-            ("01010007", "周九",   "女", "高一", "高一1班", 90, 94, 76, 66),
-            ("01010008", "吴十",   "男", "高一", "高一1班", 55, 88, 95, 76),
-            ("01010009", "郑十一", "女", "高一", "高一1班", 88, 72, 68, 94),
-            ("01010010", "冯十二", "男", "高一", "高一1班", 76, 66, 84, 78),
-            # === 高一2班（5人）===
-            ("01020001", "陈十三", "女", "高一", "高一2班", 82, 90, 62, 70),
-            ("01020002", "褚十四", "男", "高一", "高一2班", 68, 74, 78, 86),
-            ("01020003", "卫十五", "女", "高一", "高一2班", 94, 68, 72, 64),
-            ("01020004", "蒋十六", "男", "高一", "高一2班", 60, 80, 96, 72),
-            ("01020005", "沈十七", "女", "高一", "高一2班", 74, 92, 66, 84),
-            # === 高二1班（5人）===
-            ("02010001", "韩十八", "男", "高二", "高二1班", 86, 58, 74, 92),
-            ("02010002", "杨十九", "女", "高二", "高二1班", 62, 70, 82, 96),
-            ("02010003", "朱二十", "男", "高二", "高二1班", 96, 64, 58, 70),
-            ("02010004", "秦二十一", "女", "高二", "高二1班", 72, 86, 90, 62),
-            ("02010005", "尤二十二", "男", "高二", "高二1班", 64, 98, 64, 58),
-        ]
-        
-        for sid, name, gender, grade, cls, yw, sx, yy, wl in students:
-            total = yw + sx + yy + wl
-            avg = round(total / 4, 1)
-            self.cur.execute("REPLACE INTO student VALUES (?,?,?,?,?)", (sid, name, gender, grade, cls))
-            self.cur.execute("REPLACE INTO score VALUES (?,?,?,?,?,?,?)", (sid, yw, sx, yy, wl, total, avg))
-        
-        self.conn.commit()
-
-    # ==================== 查询方法 ====================
+            classes = self.db.fetchall("SELECT DISTINCT grade_code FROM students")
+            if classes:
+                # 取最近年级
+                latest = max(c["grade_code"] for c in classes)
+                return latest, m.group(1).zfill(2)
+            return "01", m.group(1).zfill(2)
+        return None, None
     
-    def get_all_table(self):
-        data = self.cur.execute('''
-            SELECT s.sid,s.name,s.gender,s.grade,s.class,sc.语文,sc.数学,sc.英语,sc.物理,sc.总分,sc.平均分
-            FROM student s LEFT JOIN score sc ON s.sid=sc.sid
-            ORDER BY s.sid
-        ''').fetchall()
-        txt = f"{'学号':<10}{'姓名':<8}{'性别':<5}{'年级':<6}{'班级':<8}{'语文':<6}{'数学':<6}{'英语':<6}{'物理':<6}{'总分':<7}{'平均分'}\n"
-        txt += "-" * 110 + "\n"
-        for d in data:
-            txt += f"{d[0]:<10}{d[1]:<8}{d[2]:<5}{d[3]:<6}{d[4]:<8}{d[5]:<6}{d[6]:<6}{d[7]:<6}{d[8]:<6}{d[9]:<7}{d[10]}\n"
-        return txt
-
-    def get_rank(self, field="总分"):
-        """全校排名"""
-        data = self.cur.execute(f'''
-            SELECT s.sid,s.name,s.gender,s.grade,s.class,sc.{field}
-            FROM student s LEFT JOIN score sc ON s.sid=sc.sid
-            ORDER BY sc.{field} DESC
-        ''').fetchall()
-        txt = f"📊 全校{field}排名\n"
-        txt += f"{'名次':<5}{'学号':<10}{'姓名':<8}{'性别':<5}{'年级':<6}{'班级':<8}{field:<6}\n"
-        txt += "-" * 60 + "\n"
-        for i, d in enumerate(data, 1):
-            txt += f"{i:<5}{d[0]:<10}{d[1]:<8}{d[2]:<5}{d[3]:<6}{d[4]:<8}{d[5]:<6}\n"
-        return txt
-
-    def get_class_rank(self, class_name, field=""):
-        """班级排名"""
-        if not field:
-            field = "总分"
-        data = self.cur.execute(f'''
-            SELECT s.sid,s.name,s.gender,s.grade,s.class,sc.{field}
-            FROM student s LEFT JOIN score sc ON s.sid=sc.sid
-            WHERE s.class=?
-            ORDER BY sc.{field} DESC
-        ''').fetchall()
-        if not data:
-            return f"❌ 未找到班级 '{class_name}' 的学生数据"
-        
-        txt = f"📊 {class_name}{field}排名\n"
-        txt += f"{'名次':<5}{'学号':<10}{'姓名':<8}{'性别':<5}{field:<6}\n"
-        txt += "-" * 40 + "\n"
-        for i, d in enumerate(data, 1):
-            txt += f"{i:<5}{d[0]:<10}{d[1]:<8}{d[2]:<5}{d[3]:<6}\n"
-        return txt
-
-    def get_grade_rank(self, grade_str, field=""):
-        """年级排名"""
-        if not field:
-            field = "总分"
-        data = self.cur.execute(f'''
-            SELECT s.sid,s.name,s.gender,s.grade,s.class,sc.{field}
-            FROM student s LEFT JOIN score sc ON s.sid=sc.sid
-            WHERE s.grade=?
-            ORDER BY sc.{field} DESC
-        ''').fetchall()
-        if not data:
-            return f"❌ 未找到年级 '{grade_str}' 的学生数据"
-        
-        txt = f"📊 {grade_str}年级{field}排名\n"
-        txt += f"{'名次':<5}{'学号':<10}{'姓名':<8}{'性别':<5}{'班级':<8}{field:<6}\n"
-        txt += "-" * 50 + "\n"
-        for i, d in enumerate(data, 1):
-            txt += f"{i:<5}{d[0]:<10}{d[1]:<8}{d[2]:<5}{d[3]:<8}{d[4]:<6}\n"
-        return txt
-
-    # ==================== 分析统计方法 ====================
+    def extract_grade_info(self, text: str) -> Optional[str]:
+        for gname, gcode in GRADE_CODES.items():
+            if gname in text:
+                return gcode
+        return None
     
-    def analyze_class(self, class_name):
-        """分析一个班的整体成绩"""
-        data = self.cur.execute('''
-            SELECT sc.语文, sc.数学, sc.英语, sc.物理, sc.总分
-            FROM student s LEFT JOIN score sc ON s.sid=sc.sid
-            WHERE s.class=?
-        ''', (class_name,)).fetchall()
-        
-        if not data:
-            return None
-        
-        subjects = {"语文": [], "数学": [], "英语": [], "物理": [], "总分": []}
-        for row in data:
-            subjects["语文"].append(row[0])
-            subjects["数学"].append(row[1])
-            subjects["英语"].append(row[2])
-            subjects["物理"].append(row[3])
-            subjects["总分"].append(row[4])
-        
-        student_count = len(data)
-        analysis = f"【{class_name}成绩分析】\n"
-        analysis += f"📌 班级总人数：{student_count}人\n\n"
-        
-        for subj, scores in subjects.items():
-            if not scores:
-                continue
-            avg = sum(scores) / len(scores)
-            max_score = max(scores)
-            min_score = min(scores)
-            # 计算及格率（>=60）和优秀率（>=90）
-            pass_count = sum(1 for s in scores if s >= 60)
-            excellent_count = sum(1 for s in scores if s >= 90)
-            pass_rate = pass_count / len(scores) * 100
-            excellent_rate = excellent_count / len(scores) * 100
-            
-            analysis += f"▶ {subj}：\n"
-            analysis += f"   平均分：{avg:.1f}  最高分：{max_score}  最低分：{min_score}\n"
-            analysis += f"   及格率：{pass_rate:.1f}%  优秀率：{excellent_rate:.1f}%\n"
-            analysis += "\n"
-        
-        return analysis
+    def _generate_menu(self) -> str:
+        return (
+            "【功能菜单】\n"
+            "====================\n"
+            "【信息】基础功能:\n"
+            "  添加学生 - 添加新同学\n"
+            "  查询学生 - 按学号/姓名查询\n"
+            "  修改成绩 - 更新各科成绩\n"
+            "  删除学生 - 移除学生\n"
+            "  显示全部 - 浏览所有学生\n\n"
+            "【图表】排名功能:\n"
+            "  总分排名 - 全校总分排名\n"
+            "  班级排名 - 某班内排名\n"
+            "  年级排名 - 全年级排名\n"
+            "  单科排名 - 某科目排名\n\n"
+            "【AI】智能分析:\n"
+            "  分析班级 - 综合评估班级\n"
+            "  分析年级 - 整体分析年级\n"
+            "  评估学生 - 个人学习评估\n"
+            "  系统统计 - 数据概览\n\n"
+            "【文件】数据管理:\n"
+            "  导出Excel - 导出成绩表\n"
+            "  查看表格 - 打开数据表格\n\n"
+            "【提示】自然语言提问:\n"
+            "  「高一1班成绩怎么样」\n"
+            "  「分析张三的学习情况」\n"
+            "  「系统统计」\n"
+            "  「给我一些学习建议」\n"
+            "===================="
+        )
     
-    def analyze_grade(self, grade_str):
-        """分析一个年级的整体成绩"""
-        data = self.cur.execute('''
-            SELECT sc.语文, sc.数学, sc.英语, sc.物理, sc.总分, s.class
-            FROM student s LEFT JOIN score sc ON s.sid=sc.sid
-            WHERE s.grade=?
-        ''', (grade_str,)).fetchall()
+    def process_query(self, user_input: str) -> Tuple[str, Optional[str], Any]:
+        user_input = user_input.strip()
+        if not user_input:
+            return "请输入你想查询或操作的内容~", None, None
         
-        if not data:
-            return None
+        # 1. 问候
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["greeting"]):
+            return random.choice(self.greetings), None, None
         
-        subjects = {"语文": [], "数学": [], "英语": [], "物理": [], "总分": []}
-        classes = set()
-        for row in data:
-            subjects["语文"].append(row[0])
-            subjects["数学"].append(row[1])
-            subjects["英语"].append(row[2])
-            subjects["物理"].append(row[3])
-            subjects["总分"].append(row[4])
-            classes.add(row[5])
+        # 2. 菜单
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["menu"]):
+            return self._generate_menu(), "menu", None
         
-        student_count = len(data)
-        analysis = f"【{grade_str}年级成绩分析】\n"
-        analysis += f"📌 年级总人数：{student_count}人，共{len(classes)}个班级\n"
-        analysis += f"📌 班级：{'、'.join(sorted(classes))}\n\n"
+        # 3. 退出
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["exit"]):
+            return "感谢使用智析云途！再见，祝你学习进步！", "exit", None
         
-        for subj, scores in subjects.items():
-            if not scores:
-                continue
-            avg = sum(scores) / len(scores)
-            max_score = max(scores)
-            min_score = min(scores)
-            pass_count = sum(1 for s in scores if s >= 60)
-            excellent_count = sum(1 for s in scores if s >= 90)
-            pass_rate = pass_count / len(scores) * 100
-            excellent_rate = excellent_count / len(scores) * 100
-            
-            analysis += f"▶ {subj}：\n"
-            analysis += f"   平均分：{avg:.1f}  最高分：{max_score}  最低分：{min_score}\n"
-            analysis += f"   及格率：{pass_rate:.1f}%  优秀率：{excellent_rate:.1f}%\n"
-            analysis += "\n"
+        # 4. 感谢
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["thanks"]):
+            return random.choice([
+                "不客气！很高兴能帮到你",
+                "应该的！希望我的分析对你有帮助~",
+                "随时为你服务！有需要尽管找我哦"
+            ]), None, None
         
-        return analysis
-
-    # ==================== 操作方法 ====================
-
-    def add_student(self, sid, name, gender, yw=0, sx=0, yy=0, wl=0):
-        """添加学生（带学号验证）"""
-        try:
-            # 验证学号格式
-            valid, err_msg, grade, class_full = validate_student_id(sid)
-            if not valid:
-                return False, err_msg
-            
-            # 检查学号是否已存在
-            existing = self.cur.execute("SELECT sid FROM student WHERE sid=?", (sid,)).fetchone()
-            if existing:
-                return False, f"❌ 学号 {sid} 已存在，请检查后重试"
-            
-            # 添加学生
-            self.cur.execute("INSERT INTO student VALUES (?,?,?,?,?)", (sid, name, gender, grade, class_full))
-            
-            yw = float(yw)
-            sx = float(sx)
-            yy = float(yy)
-            wl = float(wl)
-            total = yw + sx + yy + wl
-            avg = round(total / 4, 1)
-            self.cur.execute("INSERT INTO score VALUES (?,?,?,?,?,?,?)", (sid, yw, sx, yy, wl, total, avg))
-            
-            self.conn.commit()
-            return True, f"✅ 成功添加学生！\n学号：{sid}  姓名：{name}  年级：{grade}  班级：{class_full}"
-        except Exception as e:
-            return False, f"❌ 添加学生失败：{str(e)}"
-
-    def update_score(self, name, subject, score):
-        try:
-            score = float(score)
-            sid = self.cur.execute("SELECT sid FROM student WHERE name=?", (name,)).fetchone()
-            if not sid:
-                return False
-            sid = sid[0]
-            self.cur.execute(f"UPDATE score SET {subject}=? WHERE sid=?", (score, sid))
-            r = self.cur.execute("SELECT 语文,数学,英语,物理 FROM score WHERE sid=?", (sid,)).fetchone()
-            total = sum(r)
-            avg = round(total / 4, 1)
-            self.cur.execute("UPDATE score SET 总分=?,平均分=? WHERE sid=?", (total, avg, sid))
-            self.conn.commit()
-            return True
-        except:
-            return False
-
-    def delete_student(self, name):
-        try:
-            # 支持模糊匹配
-            sid = self.cur.execute("SELECT sid FROM student WHERE name=?", (name,)).fetchone()
-            if not sid:
-                # 尝试模糊匹配
-                candidates = self.cur.execute("SELECT sid, name FROM student WHERE name LIKE ?", (f"%{name}%",)).fetchall()
-                if len(candidates) == 0:
-                    return False, "未找到该学生"
-                elif len(candidates) > 1:
-                    names = [c[1] for c in candidates]
-                    return False, f"找到多个匹配学生：{'、'.join(names)}，请使用完整姓名"
-                else:
-                    sid = candidates[0][0]
-            else:
-                sid = sid[0]
-            
-            student_info = self.cur.execute("SELECT name, class FROM student WHERE sid=?", (sid,)).fetchone()
-            self.cur.execute("DELETE FROM student WHERE sid=?", (sid,))
-            self.cur.execute("DELETE FROM score WHERE sid=?", (sid,))
-            self.conn.commit()
-            return True, f"✅ 已删除学生：{student_info[0]}（{student_info[1]}）"
-        except Exception as e:
-            return False, f"❌ 删除失败：{str(e)}"
-
-    def export_excel(self):
-        wb = Workbook()
-        ws1 = wb.active
-        ws1.title = "学生信息"
-        ws1.append(["学号", "姓名", "性别", "年级", "班级"])
-        for row in self.cur.execute("SELECT * FROM student").fetchall():
-            ws1.append(row)
-        ws2 = wb.create_sheet("成绩信息")
-        ws2.append(["学号", "语文", "数学", "英语", "物理", "总分", "平均分"])
-        for row in self.cur.execute("SELECT * FROM score").fetchall():
-            ws2.append(row)
-        wb.save(EXCEL_PATH)
-        return True
-
-
-# ===================== AI 工作线程 =====================
-class AIWorker(QRunnable):
-    class Signals(QObject):
-        done = pyqtSignal(str)
-        error = pyqtSignal(str)
-
-    def __init__(self, ai, db, text):
-        super().__init__()
-        self.ai = ai
-        self.db = db
-        self.text = text
-        self.signals = self.Signals()
-
-    def run(self):
-        try:
-            cmd = self.ai.parse_intent(self.text)
-            res = ""
-            ai_comment = ""
-            
-            if cmd == "show_all":
-                res = self.db.get_all_table()
-                ai_comment = self._generate_comment("显示所有学生成绩", res)
-                
-            elif cmd == "rank_total":
-                res = self.db.get_rank("总分")
-                ai_comment = self._generate_comment("全校总分排名", res)
-                
-            elif cmd == "rank_chinese":
-                res = self.db.get_rank("语文")
-                ai_comment = self._generate_comment("全校语文排名", res)
-                
-            elif cmd == "rank_math":
-                res = self.db.get_rank("数学")
-                ai_comment = self._generate_comment("全校数学排名", res)
-                
-            elif cmd == "rank_english":
-                res = self.db.get_rank("英语")
-                ai_comment = self._generate_comment("全校英语排名", res)
-                
-            elif cmd == "rank_physics":
-                res = self.db.get_rank("物理")
-                ai_comment = self._generate_comment("全校物理排名", res)
-                
-            elif cmd.startswith("class_rank|"):
-                parts = cmd.split("|")
-                class_name = parts[1] if len(parts) > 1 else ""
-                field = parts[2] if len(parts) > 2 else "总分"
-                if field and field not in ["总分", "语文", "数学", "英语", "物理"]:
-                    field = "总分"
-                res = self.db.get_class_rank(class_name, field)
-                ai_comment = self._generate_comment(f"{class_name}班级{field}排名", res)
-                
-            elif cmd.startswith("grade_rank|"):
-                parts = cmd.split("|")
-                grade_str = parts[1] if len(parts) > 1 else ""
-                field = parts[2] if len(parts) > 2 else "总分"
-                if field and field not in ["总分", "语文", "数学", "英语", "物理"]:
-                    field = "总分"
-                res = self.db.get_grade_rank(grade_str, field)
-                ai_comment = self._generate_comment(f"{grade_str}年级{field}排名", res)
-                
-            elif cmd.startswith("analyze|"):
-                parts = cmd.split("|")
-                target = parts[1] if len(parts) > 1 else ""
-                subject = parts[2] if len(parts) > 2 else ""
-                res = self._handle_analyze(target, subject)
-                
-            elif cmd == "export_excel":
-                ok = self.db.export_excel()
-                res = "✅ Excel 已导出到当前目录" if ok else "❌ 导出失败"
-                ai_comment = self._generate_comment("导出Excel", res)
-                
-            elif cmd.startswith("update|"):
-                parts = cmd.split("|")
-                if len(parts) == 4:
-                    _, name, subj, score = parts
-                    ok = self.db.update_score(name, subj, score)
-                    if ok:
-                        res = f"✅ 已修改{name}的{subj}成绩为{score}分"
-                        ai_comment = self._generate_comment(f"修改{name}的{subj}成绩", res)
-                    else:
-                        res = "❌ 修改失败，请检查学生姓名和科目是否正确"
-                        ai_comment = ""
-                else:
-                    res = "❌ 指令格式错误，应为：修改|姓名|科目|分数"
-                    
-            elif cmd.startswith("delete|"):
-                parts = cmd.split("|")
-                if len(parts) == 2:
-                    _, name = parts
-                    ok, msg = self.db.delete_student(name)
-                    if ok:
-                        res = msg
-                        ai_comment = self._generate_comment(f"删除学生{name}", res)
-                    else:
-                        res = msg
-                        ai_comment = ""
-                else:
-                    res = "❌ 指令格式错误，应为：删除|姓名"
-                    
-            elif cmd.startswith("add_student|"):
-                parts = cmd.split("|")
-                if len(parts) >= 5:
-                    _, sid, name, gender, yw = parts
-                    sx = parts[5] if len(parts) > 5 else "0"
-                    yy = parts[6] if len(parts) > 6 else "0"
-                    wl = parts[7] if len(parts) > 7 else "0"
-                    ok, msg = self.db.add_student(sid, name, gender, yw, sx, yy, wl)
-                    res = msg
-                    if ok:
-                        ai_comment = self._generate_comment("添加学生", res)
-                else:
-                    res = "❌ 指令格式错误，添加学生格式：添加学生 学号 姓名 性别 语文成绩"
-                    
-            else:
-                # 无法匹配固定指令 → 调用AI进行智能回答
-                res = self._handle_free_chat(self.text)
-            
-            # 如果有AI点评，追加到结果后面
-            if ai_comment:
-                final_res = res + "\n\n" + ai_comment
-            else:
-                final_res = res
-            
-            self.signals.done.emit(final_res)
-            
-        except Exception as e:
-            error_msg = f"❌ 处理请求时出错：{str(e)}"
-            self.signals.error.emit(error_msg)
-
-    def _handle_analyze(self, target, subject):
-        """处理分析类指令"""
-        # 尝试匹配年级分析
-        if target in ["高一", "高二", "高三"]:
-            result = self.db.analyze_grade(target)
-            if result:
-                return result
-            return f"❌ 未找到{target}年级的数据"
+        # 5. 情感/鼓励
+        chat_map = {
+            "加油": "加油！学习是持续进步的过程，每一天的努力都会开花结果！",
+            "努力": "天道酬勤，坚持就是胜利！",
+            "奋斗": "奋斗的青春最美丽！有什么问题随时问我~",
+            "迷茫": "每个人都会迷茫，不妨从小目标开始一步步来！",
+            "难过": "抱抱你~ 调整好心态重新出发！",
+            "开心": "开心就好！好心情学习效率更高哦~",
+            "哈哈": "哈哈，学习也可以很有趣的！",
+            "不错": "谢谢夸奖！我会继续努力提供更好的服务！",
+            "厉害": "过奖啦！主要是数据本身就很棒~",
+            "棒": "你最棒！",
+            "心情": "心情影响学习效率，记得保持积极心态！",
+            "辛苦了": "不辛苦！能帮到你我就很开心~",
+            "学习": "学习使人进步！有什么科目需要帮助吗？",
+            "建议": "学习建议：制定计划、定期复习、多做练习、不懂就问！",
+            "你好棒": "谢谢你！你也很棒！一起加油！",
+            "晚安": "晚安！好好休息，明天又是充满希望的一天！",
+            "早上好": "早上好！新的一天，新的收获，加油！",
+        }
+        for keyword, response in chat_map.items():
+            if keyword in user_input:
+                return response, None, None
         
-        # 尝试匹配班级分析（如"高一1班"、"1班"）
-        class_candidates = []
+        # 6. 导出Excel
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["export_excel"]):
+            return "正在导出Excel文件...", "export_excel", None
         
-        # 完整班级名
-        if "班" in target:
-            full_name = target if (target.startswith("高一") or target.startswith("高二") or target.startswith("高三")) else None
-            if full_name:
-                class_candidates.append(full_name)
-            else:
-                # 可能是"1班"
-                m = re.match(r"(\d+)班", target)
-                if m:
-                    num = m.group(1)
-                    for g in ["高一", "高二", "高三"]:
-                        class_candidates.append(f"{g}{num}班")
-        else:
-            # 没有"班"字，尝试各种组合
-            for g in ["高一", "高二", "高三"]:
-                class_candidates.append(f"{g}{target}班")
-                class_candidates.append(f"{g}{target}")
+        # 7. 查看表格
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["table"]):
+            return "正在打开数据表格...", "table", None
         
-        for cc in class_candidates:
-            result = self.db.analyze_class(cc)
-            if result:
-                # 如果指定了科目，添加该科目的详细分析
-                if subject and subject in ["语文", "数学", "英语", "物理"]:
-                    result += self._analyze_subject_detail(class_name=cc, subject=subject)
-                return result
+        # 8. 显示全部学生
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["show_all"]):
+            return "正在查询所有学生...", "show_all", None
         
-        # 都匹配不到，调用AI智能分析
-        return self._handle_free_chat(f"分析{f'{target}班' if '班' not in target else target}的成绩情况，请根据数据给出分析建议")
+        # 9. 统计
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["stats"]):
+            return "正在生成系统数据概览...", "stats", None
+        
+        # 10. 总分排名
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["rank_total"]):
+            return "正在查询全校总分排名...", "rank_total", None
+        
+        # 11. 单科排名
+        for subj in SUBJECTS:
+            if f"{subj}排名" in user_input or f"{subj}排行" in user_input:
+                gy, cn = self.extract_class_info(user_input)
+                if gy and cn:
+                    return f"正在查询{GRADE_NAMES.get(gy, gy)}{cn}班{subj}排名...", "rank_subject_class", (gy, cn, subj)
+                return f"正在查询全校{subj}排名...", "rank_subject", subj
+        
+        # 12. 班级排名
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["rank_class"]):
+            gy, cn = self.extract_class_info(user_input)
+            if gy and cn:
+                return f"正在查询{GRADE_NAMES.get(gy, gy)}{cn}班排名...", "rank_class", (gy, cn)
+            return "请指定班级，例如: 高一1班排名", "rank_class", None
+        
+        # 13. 年级排名
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["rank_grade"]):
+            gy = self.extract_grade_info(user_input)
+            if gy:
+                return f"正在查询{GRADE_NAMES.get(gy, gy)}排名...", "rank_grade", gy
+            return "请指定年级，例如: 高一年级排名", "rank_grade", None
+        
+        # 14. 班级分析
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["evaluate_class"]):
+            gy, cn = self.extract_class_info(user_input)
+            if gy and cn:
+                return f"正在分析{GRADE_NAMES.get(gy, gy)}{cn}班成绩...", "evaluate_class", (gy, cn)
+            return "请指定要分析的班级，例如: 分析高一1班成绩", "evaluate_class", None
+        
+        # 15. 年级分析
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["evaluate_grade"]):
+            gy = self.extract_grade_info(user_input)
+            if gy:
+                return f"正在分析{GRADE_NAMES.get(gy, gy)}成绩...", "evaluate_grade", gy
+            return "请指定要分析的年级，例如: 分析高一年级成绩", "evaluate_grade", None
+        
+        # 16. 添加学生
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["add"]):
+            return ("好的！添加新同学~ 请使用格式:\n"
+                   "添加学生 学号 姓名 性别 语文 数学 英语 物理 化学 生物\n"
+                   "学号标准: 8位(GGCCNNNN) 如: 01010006\n"
+                   "例如: 添加学生 01010099 王小明 男 75 82 90 68 85 79"), "add", None
+        
+        # 17. 删除学生
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["delete"]):
+            _, value = self.extract_student_info(user_input)
+            if value:
+                return f"确定要删除「{value}」？(需要确认)", "delete_confirm", value
+            return "请提供要删除学生的学号或姓名", "delete", None
+        
+        # 18. 修改成绩
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["update"]):
+            m = re.search(r'修改\s*([\u4e00-\u9fa5]+)\s*(语文|数学|英语|物理|化学|生物)\s*(\d{1,3}(?:\.\d)?)', user_input)
+            if m:
+                name = m.group(1)
+                subject = m.group(2)
+                score = float(m.group(3))
+                return f"正在修改{name}的{subject}成绩为{score}分...", "update_single", (name, subject, score)
+            return ("请提供要修改的信息，例如:\n"
+                   "修改 张三 数学 95\n"
+                   "或: 修改成绩 01010001 85 90 88 76 92 81"), "update", None
+        
+        # 19. 评估学生
+        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["evaluate_student"]):
+            _, value = self.extract_student_info(user_input)
+            if value:
+                return f"正在评估学生「{value}」的学习表现...", "evaluate_student", ("name" if re.match(r'^[\u4e00-\u9fa5]+$', value) and len(value) <= 4 else "student_id", value)
+            return "请提供要评估的学生的学号或姓名", "evaluate_student", None
+        
+        # 20. 智能检测班级/年级
+        gy, cn = self.extract_class_info(user_input)
+        if gy and cn:
+            return f"正在分析{GRADE_NAMES.get(gy, gy)}{cn}班...", "evaluate_class", (gy, cn)
+        
+        gy = self.extract_grade_info(user_input)
+        if gy:
+            return f"正在分析{GRADE_NAMES.get(gy, gy)}整体情况...", "evaluate_grade", gy
+        
+        # 21. 包含学生姓名，尝试查询
+        _, value = self.extract_student_info(user_input)
+        if value and len(user_input) < 30:
+            return f"正在查询学生「{value}」的信息...", "query_student", ("name" if re.match(r'^[\u4e00-\u9fa5]+$', value) and len(value) <= 4 else "student_id", value)
+        
+        # 22. 默认: 调用 DeepSeek API 进行智能回复
+        return self._generate_ai_response(user_input)
     
-    def _analyze_subject_detail(self, class_name, subject):
-        """单科详细分析"""
-        data = self.db.cur.execute(f'''
-            SELECT s.name, sc.{subject}
-            FROM student s LEFT JOIN score sc ON s.sid=sc.sid
-            WHERE s.class=?
-            ORDER BY sc.{subject} DESC
-        ''', (class_name,)).fetchall()
+    def _generate_ai_response(self, user_input: str) -> Tuple[str, Optional[str], Any]:
+        db_context = self.deepseek.build_context(self.db)
+        system_prompt = self.deepseek.get_system_prompt(db_context)
         
-        if not data:
-            return ""
-        
-        scores = [d[1] for d in data]
-        avg = sum(scores) / len(scores)
-        max_s = max(scores)
-        min_s = min(scores)
-        
-        detail = f"\n▶ {subject}详细分析：\n"
-        detail += f"   班级平均分：{avg:.1f}\n"
-        detail += f"   最高分：{max_s}（{data[0][0]}） 最低分：{min_s}（{data[-1][0]}）\n"
-        
-        # 分段统计
-        excellent = [(d[0], d[1]) for d in data if d[1] >= 90]
-        good = [(d[0], d[1]) for d in data if 80 <= d[1] < 90]
-        pass_s = [(d[0], d[1]) for d in data if 60 <= d[1] < 80]
-        fail = [(d[0], d[1]) for d in data if d[1] < 60]
-        
-        detail += f"   优秀(>=90)：{len(excellent)}人"
-        if excellent:
-            detail += f"（{', '.join([f'{n}({s}分)' for n, s in excellent])}）"
-        detail += "\n"
-        
-        detail += f"   良好(80-89)：{len(good)}人\n"
-        detail += f"   及格(60-79)：{len(pass_s)}人\n"
-        detail += f"   不及格(<60)：{len(fail)}人"
-        if fail:
-            detail += f"（{', '.join([f'{n}({s}分)' for n, s in fail])}）"
-        detail += "\n"
-        
-        return detail
-
-    def _handle_free_chat(self, user_text):
-        """调用AI进行自由对话"""
         messages = [
-            {"role": "system", "content": "你是一个智能化的学生成绩管理系统助手，名为'智析云途'。你可以回答关于成绩管理的一般性问题，给出学习建议，或者进行友好的日常对话。回答要简洁、友好、有温度，控制在100字以内。"},
-            {"role": "user", "content": user_text}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input}
         ]
-        response = self.ai.call_api(messages, temperature=0.8, max_tokens=300)
-        if response:
-            return f"🤖 智析云途AI：\n{response}"
-        else:
-            return "🤖 暂时无法连接到AI服务，请检查网络连接或稍后重试。\n\n您也可以尝试以下固定指令：\n• 显示所有学生成绩\n• 总分/语文/数学/英语/物理排名\n• 分析[班级/年级]成绩\n• 修改[姓名]的[科目]成绩为[分数]\n• 删除学生[姓名]\n• 导出Excel"
+        
+        if self.deepseek.available:
+            try:
+                response = self.deepseek.chat(messages, temperature=0.8, max_tokens=800)
+                if response:
+                    return f"[AI] {response}", "ai_response", None
+            except Exception as e:
+                print(f"[AI] API调用失败: {e}")
+        
+        return self._local_fallback_response(user_input)
     
-    def _generate_comment(self, action, result):
-        """生成人性化AI点评"""
-        messages = [
-            {"role": "system", "content": "你是学生成绩管理系统的AI助手。请根据用户的操作和结果数据，生成一句简短（50字以内）、亲切、有温度的人性化点评。点评要自然，不要过于机械，可以带点小表情。不需要重复数据，只需要一句温暖的点评或建议。"},
-            {"role": "user", "content": f"用户执行了操作：{action}\n结果：{result[:200]}"}
+    def _local_fallback_response(self, user_input: str) -> Tuple[str, Optional[str], Any]:
+        count = self.db.fetchone("SELECT COUNT(*) as cnt FROM students")
+        total = count["cnt"] if count else 0
+        
+        fallbacks = [
+            f"嗯...我暂时不太理解你的问题呢。\n"
+            f"不过目前系统中有 {total} 位同学的记录，你可以试试以下操作：\n"
+            "  说「菜单」查看所有功能\n"
+            "  说「分析 某班」查看班级成绩\n"
+            "  说「查询 学生姓名」查找学生",
+            
+            f"抱歉，我没有完全理解你的意思。\n"
+            f"目前系统管理着 {total} 位同学的数据，\n"
+            "你可以试试这样说：\n"
+            "  「高一1班成绩怎么样」\n"
+            "  「查询张三的成绩」\n"
+            "  「显示系统统计」",
+            
+            f"让我看看... 系统中有 {total} 位同学。\n"
+            "要不你换个说法？或者直接说「菜单」看看我能做什么~"
         ]
-        response = self.ai.call_api(messages, temperature=0.9, max_tokens=100)
-        if response:
-            return f"💬 AI小评：{response.strip()}"
-        return ""
+        return random.choice(fallbacks), None, None
 
 
-# ===================== 主界面 =====================
-class MainWindow(QMainWindow):
-    def __init__(self, db, ai):
-        super().__init__()
-        self.db = db
-        self.ai = ai
-        self.setWindowTitle("智析云途 - AI学生成绩管理系统 v2.0")
-        self.resize(1000, 850)
-        self.init_ui()
-        self.setup_menu()
+# ===================== PyQt5 图形界面 =====================
 
-    def init_ui(self):
-        # 主显示区域
-        self.chat_display = QTextBrowser()
-        self.chat_display.setFont(QFont("Microsoft YaHei", 10))
-        self.chat_display.setStyleSheet("""
-            QTextBrowser {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
-                border-radius: 5px;
-                padding: 10px;
-            }
-        """)
-        
-        # 快捷按钮区域
-        btn_frame = QWidget()
-        btn_layout = QHBoxLayout()
-        btn_layout.setContentsMargins(0, 5, 0, 5)
-        
-        buttons = [
-            ("📋 显示全部", self.show_all),
-            ("🏆 总分排名", lambda: self.send_command("总分排名")),
-            ("📊 班级排名", lambda: self.send_command("高一1班排名")),
-            ("📈 年级排名", lambda: self.send_command("高一年级排名")),
-            ("📤 导出Excel", lambda: self.send_command("导出excel")),
-        ]
-        
-        for text, func in buttons:
-            btn = QPushButton(text)
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #4a90d9;
-                    color: white;
-                    border: none;
-                    padding: 8px 15px;
-                    border-radius: 4px;
-                    font-size: 12px;
-                }
-                QPushButton:hover {
-                    background-color: #357abd;
-                }
-                QPushButton:pressed {
-                    background-color: #2a5f9e;
-                }
-            """)
-            btn.clicked.connect(func)
-            btn_layout.addWidget(btn)
-        
-        btn_frame.setLayout(btn_layout)
-        
-        # 输入区域
-        input_frame = QWidget()
-        input_layout = QHBoxLayout()
-        input_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText("输入指令，如：显示所有学生 / 分析高一1班成绩 / 总分排名 / 随便聊聊...")
-        self.input_box.setStyleSheet("""
-            QLineEdit {
-                border: 2px solid #4a90d9;
-                border-radius: 5px;
-                padding: 8px;
-                font-size: 13px;
-            }
-            QLineEdit:focus {
-                border-color: #357abd;
-            }
-        """)
-        self.input_box.returnPressed.connect(self.send_message)
-        
-        send_btn = QPushButton("发送")
-        send_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4a90d9;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 20px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #357abd;
-            }
-            QPushButton:pressed {
-                background-color: #2a5f9e;
-            }
-        """)
-        send_btn.clicked.connect(self.send_message)
-        
-        input_layout.addWidget(self.input_box)
-        input_layout.addWidget(send_btn)
-        input_frame.setLayout(input_layout)
-        
-        # 主布局
-        layout = QVBoxLayout()
-        layout.addWidget(btn_frame)
-        layout.addWidget(self.chat_display)
-        layout.addWidget(input_frame)
-        
-        widget = QWidget()
-        widget.setLayout(layout)
-        self.setCentralWidget(widget)
-
-        # 欢迎信息
-        self.chat_display.append("=" * 100)
-        self.chat_display.append("🤖 欢迎使用智析云途 AI 学生成绩管理系统 v2.0 🎉")
-        self.chat_display.append("")
-        self.chat_display.append("📌 固定指令示例：")
-        self.chat_display.append("   • 「显示所有学生」- 查看全部学生成绩")
-        self.chat_display.append("   • 「总分排名」「语文排名」「数学排名」「英语排名」「物理排名」- 全校排名")
-        self.chat_display.append("   • 「高一1班排名」「高二年级排名」「1班数学排名」- 班级/年级排名")
-        self.chat_display.append("   • 「分析高一1班成绩」「分析高二年级成绩」- AI智能分析")
-        self.chat_display.append("   • 「修改张三数学成绩95」- 修改成绩")
-        self.chat_display.append("   • 「删除李四」- 删除学生")
-        self.chat_display.append("   • 「添加学生 01020006 王小二 男 75 82 90 68」- 添加学生（学号规则：GGCCNNNN）")
-        self.chat_display.append("   • 「导出Excel」- 导出成绩表格")
-        self.chat_display.append("")
-        self.chat_display.append("💡 学号标准：8位数字 GGCCNNNN（G=年级 C=班级 N=序号）")
-        self.chat_display.append("   例如：01010001 = 高一1班第1号学生")
-        self.chat_display.append("")
-        self.chat_display.append("💬 也可以和我自由聊天，比如「今天心情不好」「给点学习建议」等")
-        self.chat_display.append("=" * 100)
-        self.chat_display.append("")
-
-    def setup_menu(self):
-        menubar = self.menuBar()
-        
-        # 系统菜单
-        sys_menu = menubar.addMenu("系统")
-        
-        export_action = QAction("导出Excel", self)
-        export_action.triggered.connect(lambda: self.send_command("导出excel"))
-        sys_menu.addAction(export_action)
-        
-        sys_menu.addSeparator()
-        
-        exit_action = QAction("退出", self)
-        exit_action.triggered.connect(self.close)
-        sys_menu.addAction(exit_action)
-        
-        # 查看菜单
-        view_menu = menubar.addMenu("查看")
-        
-        all_action = QAction("显示所有学生", self)
-        all_action.triggered.connect(self.show_all)
-        view_menu.addAction(all_action)
-        
-        view_menu.addSeparator()
-        
-        rank_menu = view_menu.addMenu("排名")
-        for name, field in [("总分排名", "总分"), ("语文排名", "语文"), ("数学排名", "数学"), ("英语排名", "英语"), ("物理排名", "物理")]:
-            action = QAction(name, self)
-            action.triggered.connect(lambda checked, f=field: self.send_command(f"{f}排名"))
-            rank_menu.addAction(action)
-        
-        # 帮助菜单
-        help_menu = menubar.addMenu("帮助")
-        
-        about_action = QAction("学号标准", self)
-        about_action.triggered.connect(lambda: self.show_info("学号标准", "学号格式：GGCCNNNN（8位数字）\nGG=年级(01高一/02高二/03高三)\nCC=班级编号(01-30)\nNNNN=顺序号(0001-9999)\n\n示例：01010001 = 高一1班第1号学生"))
-        help_menu.addAction(about_action)
-
-    def show_info(self, title, content):
-        QMessageBox.information(self, title, content)
-
-    def show_all(self):
-        """显示所有学生（通过AI处理）"""
-        self.send_command("显示所有学生")
-
-    def send_command(self, text):
-        """发送预设指令"""
-        self.input_box.setText(text)
-        self.send_message()
-
-    def send_message(self):
-        text = self.input_box.text().strip()
-        if not text:
-            return
-        
-        if len(text) > 500:
-            self.chat_display.append("👤 你：[输入过长，已截断]" + text[:200] + "...")
-            text = text[:500]
-        else:
-            self.chat_display.append(f"👤 你：{text}")
-        
-        self.input_box.clear()
-
-        self.chat_display.append("🤖 AI：思考中，请稍候...⏳")
-        QApplication.processEvents()
-
-        worker = AIWorker(self.ai, self.db, text)
-        worker.signals.done.connect(self.show_result)
-        worker.signals.error.connect(self.show_error)
-        QThreadPool.globalInstance().start(worker)
-
-    def show_result(self, result):
-        # 移除"思考中"的行
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(cursor.End)
-        self.chat_display.setTextCursor(cursor)
-        
-        # 查找最后一行"思考中"并删除
-        doc = self.chat_display.document()
-        block = doc.lastBlock()
-        if block.text().strip() == "🤖 AI：思考中，请稍候...⏳":
-            cursor = self.chat_display.textCursor()
-            cursor.movePosition(cursor.End)
-            cursor.movePosition(cursor.StartOfBlock, cursor.KeepAnchor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()  # 删除换行
-            self.chat_display.setTextCursor(cursor)
-        
-        # 在等宽字体中显示表格结果更整齐
-        if "学号" in result and "姓名" in result:
-            font = QFont("Consolas", 10)
-        else:
-            font = QFont("Microsoft YaHei", 10)
-        
-        self.chat_display.setCurrentCharFormat(QTextCharFormat())
-        fmt = QTextCharFormat()
-        fmt.setFont(font)
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(cursor.End)
-        cursor.insertText(f"\n🤖 AI：\n{result}\n\n", fmt)
-    
-    def show_error(self, error_msg):
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(cursor.End)
-        
-        block = self.chat_display.document().lastBlock()
-        if block.text().strip() == "🤖 AI：思考中，请稍候...⏳":
-            cursor = self.chat_display.textCursor()
-            cursor.movePosition(cursor.End)
-            cursor.movePosition(cursor.StartOfBlock, cursor.KeepAnchor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
-            self.chat_display.setTextCursor(cursor)
-        
-        self.chat_display.append(f"🤖 AI：\n{error_msg}\n")
+# ---------- 字体设置 ----------
+def get_font(size=11, bold=False):
+    f = QFont("Microsoft YaHei", size)
+    f.setBold(bold)
+    return f
 
 
-# ===================== 登录界面 =====================
 class LoginDialog(QDialog):
-    def __init__(self, db):
-        super().__init__()
-        self.db = db
+    """登录对话框 - 修复字体显示不全问题"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setWindowTitle("智析云途 - 登录")
-        self.setFixedSize(350, 250)
+        self.setFixedSize(420, 320)
         self.setStyleSheet("""
             QDialog {
-                background-color: #f0f4f8;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #667eea, stop:1 #764ba2);
             }
             QLabel {
-                font-size: 13px;
-                color: #333;
+                color: white;
+                font-size: 15px;
+                padding: 4px;
             }
             QLineEdit {
-                border: 2px solid #4a90d9;
-                border-radius: 5px;
-                padding: 8px;
-                font-size: 13px;
+                padding: 10px 14px;
+                font-size: 15px;
+                border: 2px solid rgba(255,255,255,0.3);
+                border-radius: 6px;
+                background: rgba(255,255,255,0.9);
+                color: #333;
+                min-height: 20px;
+            }
+            QLineEdit:focus {
+                border-color: #fff;
+                background: white;
             }
             QPushButton {
-                background-color: #4a90d9;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 10px;
-                font-size: 14px;
+                padding: 12px 30px;
+                font-size: 15px;
                 font-weight: bold;
+                border: none;
+                border-radius: 6px;
+                background: rgba(255,255,255,0.9);
+                color: #667eea;
+                min-height: 20px;
             }
             QPushButton:hover {
-                background-color: #357abd;
+                background: white;
             }
         """)
-        
-        self.user_input = QLineEdit()
-        self.user_input.setPlaceholderText("默认账号：admin")
-        self.pwd_input = QLineEdit()
-        self.pwd_input.setPlaceholderText("默认密码：123456")
-        self.pwd_input.setEchoMode(QLineEdit.Password)
-        
-        self.login_btn = QPushButton("🔐 登录系统")
-        self.login_btn.clicked.connect(self.check_login)
-        
+        self._setup_ui()
+    
+    def _setup_ui(self):
         layout = QVBoxLayout()
-        layout.setSpacing(10)
-        layout.addStretch()
-        layout.addWidget(QLabel("👤 账号"))
-        layout.addWidget(self.user_input)
-        layout.addWidget(QLabel("🔑 密码"))
-        layout.addWidget(self.pwd_input)
-        layout.addSpacing(10)
-        layout.addWidget(self.login_btn)
+        layout.setSpacing(16)
+        layout.setContentsMargins(40, 30, 40, 30)
+        
+        title = QLabel("智析云途")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(get_font(26, True))
+        title.setStyleSheet("font-size: 26px; font-weight: bold; color: white; margin-bottom: 5px;")
+        layout.addWidget(title)
+        
+        subtitle = QLabel("AI智能学生成绩管理系统")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setFont(get_font(13))
+        subtitle.setStyleSheet("font-size: 13px; color: rgba(255,255,255,0.8); margin-bottom: 12px;")
+        layout.addWidget(subtitle)
+        
+        self.username = QLineEdit()
+        self.username.setPlaceholderText("用户名")
+        self.username.setText("admin")
+        self.username.setFont(get_font(14))
+        layout.addWidget(self.username)
+        
+        self.password = QLineEdit()
+        self.password.setPlaceholderText("密码")
+        self.password.setEchoMode(QLineEdit.Password)
+        self.password.setText("123456")
+        self.password.setFont(get_font(14))
+        layout.addWidget(self.password)
+        
+        btn = QPushButton("登 录")
+        btn.clicked.connect(self.check_login)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFont(get_font(14, True))
+        layout.addWidget(btn)
+        
+        hint = QLabel("默认账号: admin / 123456")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setFont(get_font(11))
+        hint.setStyleSheet("font-size: 11px; color: rgba(255,255,255,0.6);")
+        layout.addWidget(hint)
+        
         layout.addStretch()
         self.setLayout(layout)
-        
-        self.user_input.setText("admin")
-        self.pwd_input.returnPressed.connect(self.check_login)
-
+        self.password.returnPressed.connect(self.check_login)
+    
     def check_login(self):
-        username = self.user_input.text().strip()
-        pwd = hashlib.md5(self.pwd_input.text().encode()).hexdigest()
-        admin_pwd = hashlib.md5("123456".encode()).hexdigest()
-        if username == "admin" and pwd == admin_pwd:
+        if self.username.text() == "admin" and self.password.text() == "123456":
             self.accept()
         else:
-            QMessageBox.warning(self, "登录失败", "账号或密码错误！\n默认账号：admin  密码：123456")
+            QMessageBox.warning(self, "登录失败", "用户名或密码错误！")
 
 
-# ===================== 启动 =====================
-if __name__ == "__main__":
-    ai = DoubaoAI()
-    db = Database()
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
+class AIWorker(QThread):
+    """AI后台工作线程 - 安全版，防止GC崩溃"""
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
     
-    # 设置全局字体
+    def __init__(self, deepseek: DeepSeekAI, messages: List[Dict], temperature=0.7):
+        super().__init__()
+        self.deepseek = deepseek
+        self.messages = messages
+        self.temperature = temperature
+        self._is_running = True
+    
+    def run(self):
+        try:
+            response = self.deepseek.chat(self.messages, temperature=self.temperature)
+            if not self._is_running:
+                return
+            if response:
+                self.finished.emit(response)
+            else:
+                self.error.emit("AI未能生成回复，请稍后重试")
+        except Exception as e:
+            if self._is_running:
+                self.error.emit(f"AI处理出错: {str(e)}")
+    
+    def safe_stop(self):
+        """安全停止"""
+        self._is_running = False
+
+
+class MainWindow(QMainWindow):
+    """主窗口"""
+    
+    def __init__(self):
+        super().__init__()
+        self.db = Database()
+        self.evaluator = GradeEvaluator()
+        self.ai_engine = AIChatEngine(self.db)
+        self._busy = False  # 防重复/防崩溃锁定
+        self._ai_workers = []  # 保持AIWorker引用，防止被GC导致崩溃
+        
+        # 从txt文件加载数据
+        loaded = self.db.load_from_txt()
+        if loaded > 0:
+            print(f"[系统] 从数据文件加载了 {loaded} 条记录")
+        
+        # 验证排名数据完整性
+        self._verify_ranks()
+        
+        # 初始化UI界面（必须在_init_ui中，之前的bug是把UI代码混入了_verify_ranks）
+        self._init_ui()
+    
+    def _verify_ranks(self):
+        """验证并修复排名数据（仅数据库操作，不涉及UI）"""
+        try:
+            unranked = self.db.fetchone("SELECT COUNT(*) as cnt FROM students WHERE class_rank=-1 OR grade_rank=-1")
+            if unranked and unranked["cnt"] > 0:
+                print(f"[系统] 发现 {unranked['cnt']} 条未排名数据，正在更新...")
+                self.db.update_all_ranks()
+        except Exception as e:
+            print(f"[系统] 排名验证失败: {e}")
+    
+    def _init_ui(self):
+        """界面初始化 - 作为独立方法在_verify_ranks后安全调用"""
+        self.setWindowTitle("智析云途 - AI智能学生成绩管理系统")
+        self.setMinimumSize(1200, 820)
+        
+        # 全局样式
+        self.setStyleSheet("""
+            QMainWindow { background: #f0f2f5; }
+            QTextEdit {
+                background: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 10px;
+                font-size: 14px;
+            }
+            QLineEdit {
+                padding: 10px 15px;
+                font-size: 14px;
+                border: 2px solid #e0e0e0;
+                border-radius: 20px;
+                background: white;
+            }
+            QLineEdit:focus { border-color: #667eea; }
+            QPushButton {
+                padding: 8px 16px;
+                font-size: 13px;
+                border: none;
+                border-radius: 6px;
+                background: #667eea;
+                color: white;
+            }
+            QPushButton:hover { background: #5a6fd6; }
+            QPushButton:pressed { background: #4a5fc6; }
+            QTableWidget {
+                background: white;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                gridline-color: #eee;
+                font-size: 13px;
+            }
+            QTableWidget::item { padding: 4px 8px; }
+            QTableWidget::item:selected { background: #667eea; color: white; }
+            QHeaderView::section {
+                background: #667eea;
+                color: white;
+                padding: 8px;
+                border: none;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QComboBox {
+                padding: 6px 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background: white;
+                font-size: 13px;
+                min-height: 20px;
+            }
+            QComboBox:hover { border-color: #667eea; }
+            QComboBox::drop-down { border: none; width: 24px; }
+            QSplitter::handle { background: #ddd; width: 3px; }
+            QStatusBar { background: #e8eaf6; border-top: 1px solid #ddd; }
+        """)
+        
+        self._setup_ui()
+        self._refresh_table()
+    
+    def _setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # ===== 标题栏 =====
+        title_bar = QWidget()
+        title_bar.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #667eea, stop:1 #764ba2); border-radius: 10px;")
+        title_layout = QHBoxLayout()
+        
+        title_label = QLabel("【智析云途】AI智能学生成绩管理系统")
+        title_label.setFont(get_font(16, True))
+        title_label.setStyleSheet("color: white; font-size: 16px; font-weight: bold; padding: 8px;")
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        
+        btn_style = ("QPushButton { background: rgba(255,255,255,0.2); color: white; padding: 6px 12px; "
+                     "font-size: 12px; border-radius: 4px; min-height: 18px; } "
+                     "QPushButton:hover { background: rgba(255,255,255,0.3); }")
+        
+        buttons = [
+            ("显示全部", self.show_all),
+            ("总分排名", self.show_rank_total),
+            ("班级排名", self.show_rank_class),
+            ("年级排名", self.show_rank_grade),
+            ("导出Excel", self.export_excel),
+            ("表格视图", self.open_table_dialog),
+            ("菜单", self.show_menu),
+        ]
+        
+        for text, handler in buttons:
+            btn = QPushButton(text)
+            btn.setStyleSheet(btn_style)
+            btn.setFont(get_font(12))
+            btn.clicked.connect(handler)
+            title_layout.addWidget(btn)
+        
+        title_bar.setLayout(title_layout)
+        main_layout.addWidget(title_bar)
+        
+        # ===== 分割器 =====
+        splitter = QSplitter(Qt.Vertical)
+        
+        # ---- 上方: 聊天区域 ----
+        chat_widget = QWidget()
+        chat_layout = QVBoxLayout()
+        chat_layout.setSpacing(6)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.chat_area = QTextEdit()
+        self.chat_area.setReadOnly(True)
+        self.chat_area.setMinimumHeight(180)
+        self.chat_area.setFont(get_font(14))
+        chat_layout.addWidget(self.chat_area)
+        
+        input_layout = QHBoxLayout()
+        self.input_box = QLineEdit()
+        self.input_box.setPlaceholderText("输入指令或问题，按Enter发送...")
+        self.input_box.setFont(get_font(14))
+        self.input_box.returnPressed.connect(self.send_message)
+        input_layout.addWidget(self.input_box)
+        
+        send_btn = QPushButton("发送")
+        send_btn.setFont(get_font(14, True))
+        send_btn.setStyleSheet("""
+            QPushButton { padding: 10px 24px; font-size: 14px; border-radius: 20px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #667eea, stop:1 #764ba2);
+                color: white; font-weight: bold; min-height: 16px; }
+            QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6fd6, stop:1 #6a41a2); }
+        """)
+        send_btn.clicked.connect(self.send_message)
+        input_layout.addWidget(send_btn)
+        chat_layout.addLayout(input_layout)
+        
+        chat_widget.setLayout(chat_layout)
+        splitter.addWidget(chat_widget)
+        
+        # ---- 下方: 可编辑数据表格 ----
+        table_widget = QWidget()
+        table_layout = QVBoxLayout()
+        table_layout.setSpacing(4)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 表格工具栏
+        toolbar = QHBoxLayout()
+        
+        toolbar.addWidget(QLabel("年级:"))
+        self.table_grade_filter = QComboBox()
+        self.table_grade_filter.addItem("全部年级")
+        self._update_grade_filter()
+        self.table_grade_filter.currentIndexChanged.connect(self._on_filter_changed)
+        toolbar.addWidget(self.table_grade_filter)
+        
+        toolbar.addWidget(QLabel("班级:"))
+        self.table_class_filter = QComboBox()
+        self.table_class_filter.addItem("全部班级")
+        self.table_class_filter.currentIndexChanged.connect(self._on_filter_changed)
+        toolbar.addWidget(self.table_class_filter)
+        
+        toolbar.addStretch()
+        
+        refresh_btn = QPushButton("刷新表格")
+        refresh_btn.setFont(get_font(12))
+        refresh_btn.clicked.connect(self._refresh_table)
+        toolbar.addWidget(refresh_btn)
+        
+        save_btn = QPushButton("保存修改")
+        save_btn.setFont(get_font(12))
+        save_btn.clicked.connect(self._save_table_changes)
+        toolbar.addWidget(save_btn)
+        
+        add_btn = QPushButton("添加学生")
+        add_btn.setFont(get_font(12))
+        add_btn.clicked.connect(self._show_add_dialog)
+        toolbar.addWidget(add_btn)
+        
+        toolbar.addWidget(self._make_delete_btn())
+        
+        table_layout.addLayout(toolbar)
+        
+        # 表格 - 增加右键菜单和排序支持
+        self.data_table = QTableWidget()
+        self.data_table.setColumnCount(13)
+        self.data_table.setHorizontalHeaderLabels(
+            ["学号", "姓名", "性别", "年级", "班级", "语文", "数学", "英语", "物理", "化学", "生物", "总分", "操作"]
+        )
+        self.data_table.horizontalHeader().setStretchLastSection(False)
+        self.data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # 操作列不拉伸
+        self.data_table.horizontalHeader().setSectionResizeMode(12, QHeaderView.ResizeToContents)
+        self.data_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.data_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        
+        # 启用排序
+        self.data_table.setSortingEnabled(True)
+        
+        # 右键菜单
+        self.data_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.data_table.customContextMenuRequested.connect(self._on_table_right_click)
+        
+        table_layout.addWidget(self.data_table)
+        
+        # 统计信息
+        self.table_stats = QLabel()
+        self.table_stats.setFont(get_font(13))
+        self.table_stats.setStyleSheet("padding: 8px; background: white; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;")
+        table_layout.addWidget(self.table_stats)
+        
+        table_widget.setLayout(table_layout)
+        splitter.addWidget(table_widget)
+        
+        splitter.setSizes([300, 400])
+        main_layout.addWidget(splitter)
+        
+        # 状态栏
+        self.status_bar = QStatusBar()
+        self.status_bar.setFont(get_font(12))
+        self.status_bar.showMessage("就绪")
+        main_layout.addWidget(self.status_bar)
+        
+        central.setLayout(main_layout)
+        
+        # 欢迎消息
+        self._append_message("system", "欢迎使用智析云途AI智能学生成绩管理系统！\n输入「菜单」查看所有功能，或直接输入问题开始智能对话。\n下方表格可直接双击编辑成绩，点击「保存修改」生效。")
+    
+    def _update_grade_filter(self):
+        """更新年级筛选下拉框"""
+        current = self.table_grade_filter.currentText()
+        self.table_grade_filter.blockSignals(True)
+        while self.table_grade_filter.count() > 1:
+            self.table_grade_filter.removeItem(1)
+        try:
+            grades = self.db.get_available_grades()
+            for g in grades:
+                name = GRADE_NAMES.get(g, f"{g}年级")
+                self.table_grade_filter.addItem(f"{name}({g})")
+            # 恢复选中
+            idx = self.table_grade_filter.findText(current)
+            if idx >= 0:
+                self.table_grade_filter.setCurrentIndex(idx)
+            else:
+                self.table_grade_filter.setCurrentIndex(0)
+        except Exception:
+            pass
+        self.table_grade_filter.blockSignals(False)
+    
+    def _update_class_filter(self, grade_code=None):
+        """更新班级筛选下拉框"""
+        current = self.table_class_filter.currentText()
+        self.table_class_filter.blockSignals(True)
+        while self.table_class_filter.count() > 1:
+            self.table_class_filter.removeItem(1)
+        try:
+            if grade_code:
+                classes = self.db.get_available_classes(grade_code)
+            else:
+                classes = self.db.get_available_classes()
+            for c in classes:
+                self.table_class_filter.addItem(f"{c}班")
+            idx = self.table_class_filter.findText(current)
+            if idx >= 0:
+                self.table_class_filter.setCurrentIndex(idx)
+        except Exception:
+            pass
+        self.table_class_filter.blockSignals(False)
+    
+    def _on_filter_changed(self):
+        """筛选条件改变"""
+        grade_text = self.table_grade_filter.currentText()
+        grade_code = None
+        for gname, gcode in GRADE_CODES.items():
+            if gname in grade_text:
+                grade_code = gcode
+                break
+        self._update_class_filter(grade_code)
+        self._refresh_table()
+    
+    def _make_delete_btn(self) -> QPushButton:
+        """创建删除按钮"""
+        btn = QPushButton("删除选中")
+        btn.setFont(get_font(12))
+        btn.setStyleSheet(
+            "QPushButton { background: #e74c3c; color: white; padding: 6px 12px; border-radius: 4px; } "
+            "QPushButton:hover { background: #c0392b; }"
+        )
+        btn.clicked.connect(self._delete_selected_student)
+        return btn
+    
+    def _on_table_right_click(self, pos: QPoint):
+        """表格右键菜单"""
+        row = self.data_table.rowAt(pos.y())
+        if row < 0:
+            return
+        
+        self.data_table.selectRow(row)
+        
+        student_id_item = self.data_table.item(row, 0)
+        name_item = self.data_table.item(row, 1)
+        if not student_id_item or not name_item:
+            return
+        
+        sid = student_id_item.text()
+        name = name_item.text()
+        
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 4px; }
+            QMenu::item { padding: 8px 20px; font-size: 13px; }
+            QMenu::item:selected { background: #667eea; color: white; border-radius: 4px; }
+        """)
+        
+        action_delete = QAction(f"删除 {name}({sid})", self)
+        action_delete.triggered.connect(lambda: self._confirm_delete(sid, name))
+        action_delete.setIcon(self.style().standardIcon(34))  # SP_TrashIcon
+        menu.addAction(action_delete)
+        
+        menu.addSeparator()
+        
+        action_edit = QAction(f"修改 {name} 的成绩", self)
+        action_edit.triggered.connect(lambda: self._edit_student_score(sid, name))
+        menu.addAction(action_edit)
+        
+        menu.addSeparator()
+        
+        action_eval = QAction(f"评估 {name}", self)
+        action_eval.triggered.connect(lambda: self._evaluate_student_from_table(sid, name))
+        menu.addAction(action_eval)
+        
+        menu.exec_(self.data_table.viewport().mapToGlobal(pos))
+    
+    def _confirm_delete(self, sid: str, name: str):
+        """确认删除"""
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除学生「{name}」(学号: {sid}) 吗？\n此操作不可恢复！",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            try:
+                self.db.execute("DELETE FROM students WHERE student_id=?", (sid,))
+                self.db.update_all_ranks()
+                self._append_message("system", f"已删除学生「{name}」({sid})")
+                self._refresh_table()
+                self.status_bar.showMessage(f"已删除 {name}")
+            except Exception as e:
+                QMessageBox.warning(self, "删除失败", str(e))
+    
+    def _delete_selected_student(self):
+        """删除选中的学生"""
+        selected = self.data_table.selectedItems()
+        if not selected:
+            QMessageBox.information(self, "提示", "请先在表格中选中要删除的学生行")
+            return
+        
+        row = selected[0].row()
+        student_id_item = self.data_table.item(row, 0)
+        name_item = self.data_table.item(row, 1)
+        if student_id_item and name_item:
+            self._confirm_delete(student_id_item.text(), name_item.text())
+    
+    def _edit_student_score(self, sid: str, name: str):
+        """编辑学生成绩"""
+        student = self.db.fetchone("SELECT * FROM students WHERE student_id=?", (sid,))
+        if not student:
+            QMessageBox.warning(self, "错误", f"未找到学生 {sid}")
+            return
+        
+        # 弹出输入对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"修改 {name} 的成绩")
+        dialog.setFixedSize(350, 320)
+        dialog.setStyleSheet("""
+            QDialog { background: white; }
+            QLabel { font-size: 14px; padding: 4px; }
+            QLineEdit { padding: 8px; font-size: 14px; border: 1px solid #ddd; border-radius: 4px; }
+            QPushButton { padding: 8px 20px; font-size: 14px; border: none; border-radius: 4px; background: #667eea; color: white; }
+            QPushButton:hover { background: #5a6fd6; }
+        """)
+        
+        layout = QVBoxLayout()
+        form = QFormLayout()
+        
+        inputs = {}
+        for subj, field in zip(SUBJECTS, SUBJECT_FIELDS):
+            inp = QLineEdit()
+            inp.setPlaceholderText(f"当前: {int(student[field])}")
+            inputs[field] = inp
+            form.addRow(f"{subj}:", inp)
+        
+        layout.addLayout(form)
+        
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("保存修改")
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setStyleSheet("QPushButton { background: #95a5a6; } QPushButton:hover { background: #7f8c8d; }")
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        ok_btn.clicked.connect(lambda: self._do_edit_score(dialog, sid, inputs))
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+    
+    def _do_edit_score(self, dialog: QDialog, sid: str, inputs: Dict[str, QLineEdit]):
+        """执行成绩修改"""
+        scores = []
+        for field in SUBJECT_FIELDS:
+            val = inputs[field].text().strip()
+            if val:
+                try:
+                    s = float(val)
+                    if s < 0 or s > 100:
+                        QMessageBox.warning(dialog, "错误", "成绩必须在0-100之间")
+                        return
+                    scores.append(s)
+                except ValueError:
+                    QMessageBox.warning(dialog, "错误", "请输入有效的数字")
+                    return
+            else:
+                scores.append(None)
+        
+        # 构建更新SQL
+        updates = []
+        params = []
+        for field, score in zip(SUBJECT_FIELDS, scores):
+            if score is not None:
+                updates.append(f"{field}=?")
+                params.append(score)
+        
+        if not updates:
+            QMessageBox.information(dialog, "提示", "没有需要修改的成绩")
+            return
+        
+        params.append(sid)
+        try:
+            self.db.execute(
+                f"UPDATE students SET {', '.join(updates)}, total_score=chinese+math+english+physics+chemistry+biology WHERE student_id=?",
+                params
+            )
+            self.db.update_all_ranks()
+            self._refresh_table()
+            self._append_message("system", f"已更新 {sid} 的成绩")
+            self.status_bar.showMessage(f"已修改 {sid} 的成绩")
+            dialog.accept()
+        except Exception as e:
+            QMessageBox.warning(dialog, "错误", f"修改失败: {e}")
+    
+    def _evaluate_student_from_table(self, sid: str, name: str):
+        """从表格评估学生"""
+        self.input_box.setText(f"评估 {name}")
+        self.send_message()
+    
+    def _refresh_table(self):
+        """刷新数据表格"""
+        try:
+            self.data_table.itemChanged.disconnect()
+        except:
+            pass
+        
+        self.data_table.setSortingEnabled(False)
+        
+        grade_text = self.table_grade_filter.currentText()
+        class_text = self.table_class_filter.currentText()
+        
+        sql = "SELECT * FROM students"
+        conditions = []
+        
+        for gname, gcode in GRADE_CODES.items():
+            if gname in grade_text and "全部" not in grade_text:
+                conditions.append(f"grade_code='{gcode}'")
+                break
+        
+        if class_text != "全部班级":
+            try:
+                class_code = class_text[:2]
+                conditions.append(f"class_code='{class_code}'")
+            except:
+                pass
+        
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY grade_code, class_code, student_id"
+        
+        students = self.db.fetchall(sql)
+        
+        self.data_table.setRowCount(len(students))
+        
+        for row, s in enumerate(students):
+            gn = GRADE_NAMES.get(s["grade_code"], s["grade_code"])
+            
+            # 操作列（第12列）填充删除按钮
+            items = [
+                s["student_id"],
+                s["name"],
+                s["gender"],
+                gn,
+                f"{s['class_code']}班",
+                str(int(s["chinese"])),
+                str(int(s["math"])),
+                str(int(s["english"])),
+                str(int(s["physics"])),
+                str(int(s["chemistry"])),
+                str(int(s["biology"])),
+                str(int(s["total_score"])),
+                "❌ 删除"
+            ]
+            
+            for col, text in enumerate(items):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter)
+                # 成绩列 (5-10) 可编辑
+                if 5 <= col <= 10:
+                    item.setFlags(item.flags() | Qt.ItemIsEditable)
+                    item.setBackground(QColor(240, 255, 240))
+                elif col == 12:
+                    # 操作列 - 红色字体
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    item.setForeground(QBrush(QColor("#e74c3c")))
+                    item.setToolTip("点击此处删除该学生")
+                else:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.data_table.setItem(row, col, item)
+        
+        # 统计信息
+        if students:
+            totals = [s["total_score"] for s in students]
+            avg = sum(totals) / len(totals)
+            self.table_stats.setText(
+                f"共 {len(students)} 名学生 | "
+                f"总分范围: {min(totals):.0f} - {max(totals):.0f} | "
+                f"平均分: {avg:.1f} | "
+                f"双击成绩单元格可编辑，点击「保存修改」生效"
+            )
+        else:
+            self.table_stats.setText("暂无数据")
+        
+        self._table_modified = {}
+        self.data_table.setSortingEnabled(True)
+        self.data_table.itemChanged.connect(self._on_table_cell_changed)
+    
+    def _on_table_cell_changed(self, item):
+        """表格单元格修改时自动计算总分"""
+        row = item.row()
+        col = item.column()
+        
+        if 5 <= col <= 10:
+            try:
+                val = float(item.text())
+                if val < 0 or val > 100:
+                    QMessageBox.warning(self, "无效输入", "成绩必须在0-100之间")
+                    self._refresh_table()
+                    return
+                
+                # 计算新总分
+                scores = []
+                for c in range(5, 11):
+                    cell = self.data_table.item(row, c)
+                    if cell:
+                        try:
+                            scores.append(float(cell.text()))
+                        except:
+                            scores.append(0)
+                    else:
+                        scores.append(0)
+                
+                total = sum(scores)
+                total_item = self.data_table.item(row, 11)
+                if total_item:
+                    total_item.setText(str(int(total)))
+                
+                # 记录修改
+                student_id_item = self.data_table.item(row, 0)
+                if student_id_item:
+                    sid = student_id_item.text()
+                    self._table_modified[sid] = {
+                        'scores': scores,
+                        'total': total,
+                        'row': row
+                    }
+                
+            except ValueError:
+                pass
+    
+    def _save_table_changes(self):
+        """保存表格修改到数据库"""
+        if not hasattr(self, '_table_modified') or not self._table_modified:
+            QMessageBox.information(self, "提示", "没有需要保存的修改")
+            return
+        
+        try:
+            count = 0
+            for sid, data in self._table_modified.items():
+                scores = data['scores']
+                total = data['total']
+                self.db.execute(
+                    "UPDATE students SET chinese=?, math=?, english=?, physics=?, chemistry=?, biology=?, total_score=? WHERE student_id=?",
+                    (scores[0], scores[1], scores[2], scores[3], scores[4], scores[5], total, sid)
+                )
+                count += 1
+            
+            # 更新排名
+            self.db.update_all_ranks()
+            self._table_modified = {}
+            
+            QMessageBox.information(self, "成功", f"已保存 {count} 名学生的修改，并更新了排名")
+            self._refresh_table()
+            self._append_message("system", f"已保存 {count} 名学生的成绩修改并更新排名")
+            self.status_bar.showMessage(f"已保存 {count} 条修改")
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", f"保存时出错: {e}")
+    
+    def _show_add_dialog(self):
+        """显示添加学生对话框"""
+        try:
+            dialog = AddStudentDialog(self.db, self)
+            if dialog.exec_() == QDialog.Accepted:
+                self._refresh_table()
+                self._update_grade_filter()
+                self._append_message("system", f"已成功添加学生 {dialog.student_id}")
+        except Exception as e:
+            QMessageBox.warning(self, "添加失败", f"添加学生时出错: {e}")
+    
+    def _append_message(self, sender: str, message: str):
+        """添加消息到聊天区域"""
+        try:
+            color = "#667eea" if sender == "user" else "#2ecc71" if sender == "system" else "#333"
+            bg = "#f0f2ff" if sender == "user" else "#f0fff4" if sender == "system" else "white"
+            border_color = color
+            html = f'<div style="margin: 6px 0; padding: 12px; border-radius: 8px; background: {bg}; border-left: 4px solid {border_color};">'
+            if sender == "user":
+                html += f'<b style="color: {color}; font-size: 14px;">你: </b>'
+            html += f'<span style="color: #333; font-size: 14px; white-space: pre-wrap;">{message}</span></div>'
+            self.chat_area.append(html)
+            scrollbar = self.chat_area.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        except Exception:
+            pass
+    
+    def send_message(self, text_override=None):
+        """发送消息处理 - 完全防止崩溃 + 防重复进入"""
+        # 防重复锁
+        if self._busy:
+            return
+        self._busy = True
+        
+        try:
+            if text_override:
+                text = text_override
+            else:
+                text = self.input_box.text().strip()
+            
+            if not text:
+                self._busy = False
+                return
+            
+            self.input_box.clear()
+            self._append_message("user", text)
+            self.status_bar.showMessage("正在处理...")
+            
+            # 安全执行process_query (QTimer延迟释放锁，避免重复进入)
+            try:
+                response, func, params = self.ai_engine.process_query(text)
+            except Exception as e:
+                self._append_message("system", f"AI分析出错: {e}")
+                self.status_bar.showMessage("就绪")
+                self._busy = False
+                return
+            
+            # 安全执行exit
+            if func == "exit":
+                self._append_message("system", response)
+                self._busy = False
+                QTimer.singleShot(1000, self.close)
+                return
+            
+            # 安全执行功能函数
+            result_text_to_output = response
+            try:
+                result_text = self._execute_function(func, params, text)
+                if result_text is not None:
+                    result_text_to_output = result_text
+            except Exception as e:
+                result_text_to_output = f"操作出错: {e}"
+            
+            # 安全输出
+            try:
+                self._append_message("system", result_text_to_output)
+            except Exception:
+                pass
+            
+            # AI额外点评（后台线程，不阻塞）
+            try:
+                if func in ("evaluate_class", "evaluate_grade", "evaluate_student", "rank_total", "stats"):
+                    self._generate_ai_comment(func, params, text)
+            except Exception:
+                pass
+            
+            self.status_bar.showMessage("就绪")
+        except Exception as e:
+            try:
+                self._append_message("system", f"系统错误: {e}")
+                self.status_bar.showMessage("就绪")
+            except:
+                pass
+            import traceback
+            print(f"[send_message] Error: {traceback.format_exc()}")
+        finally:
+            # 确保锁最终释放
+            QTimer.singleShot(100, lambda: self._reset_busy())
+    
+    def _reset_busy(self):
+        """延迟重置忙碌状态，防止连续快速按Enter"""
+        self._busy = False
+    
+    def _execute_function(self, func: Optional[str], params: Any, original_text: str) -> Optional[str]:
+        if func is None:
+            return None
+        
+        # 安全保护：如果func需要params但params为None，返回None（保留原始提示文本）
+        _funcs_needing_params = {
+            "rank_class", "rank_grade", "rank_subject", "rank_subject_class",
+            "evaluate_class", "evaluate_grade", "evaluate_student",
+            "query_student", "update_single", "delete_confirm"
+        }
+        if func in _funcs_needing_params and params is None:
+            return None
+        
+        try:
+            if func == "menu":
+                return None
+            
+            elif func == "show_all":
+                students = self.db.fetchall("SELECT * FROM students ORDER BY grade_code, class_code, student_id")
+                if not students:
+                    return "[空] 系统中暂无学生数据。"
+                lines = [f"共 {len(students)} 位同学:"]
+                for s in students:
+                    level, emoji = self.evaluator.get_grade_level(s["total_score"] / 6)
+                    gn = GRADE_NAMES.get(s["grade_code"], s["grade_code"])
+                    lines.append(f"  {s['student_id']} {s['name']} | {gn}{s['class_code']}班 | 总分:{s['total_score']:.0f} ({level}{emoji})")
+                return "\n".join(lines)
+            
+            elif func == "query_student":
+                id_type, id_value = params
+                student = self.db.fetchone(
+                    "SELECT * FROM students WHERE student_id=? OR name=? LIMIT 1",
+                    (id_value, id_value)
+                )
+                if student:
+                    eval_result = self.evaluator.evaluate_student(student)
+                    return self._format_student_detail(eval_result)
+                return f"未找到「{id_value}」相关信息"
+            
+            elif func == "rank_total":
+                students = self.db.fetchall("SELECT * FROM students ORDER BY total_score DESC")
+                if not students:
+                    return "[空] 暂无数据"
+                lines = ["【全校总分排名】"]
+                for i, s in enumerate(students, 1):
+                    level, emoji = self.evaluator.get_grade_level(s["total_score"] / 6)
+                    gn = GRADE_NAMES.get(s["grade_code"], s["grade_code"])
+                    lines.append(f"  #{i:>2} {s['name']:<6} {gn}{s['class_code']}班 | {s['total_score']:.0f}分 {emoji}{level}")
+                return "\n".join(lines)
+            
+            elif func == "rank_class":
+                if params is None:
+                    return None  # 返回None则保留原始提示文本
+                gy, cn = params
+                students = self.db.fetchall(
+                    "SELECT * FROM students WHERE grade_code=? AND class_code=? ORDER BY total_score DESC",
+                    (gy, cn)
+                )
+                gn = GRADE_NAMES.get(gy, gy)
+                if not students:
+                    return f"{gn}{cn}班暂无数据"
+                lines = [f"【{gn}{cn}班 排名】"]
+                for i, s in enumerate(students, 1):
+                    level, emoji = self.evaluator.get_grade_level(s["total_score"] / 6)
+                    lines.append(f"  #{i:>2} {s['name']:<6} {s['total_score']:.0f}分 {emoji}{level}")
+                avg = sum(s['total_score'] for s in students) / len(students)
+                lines.append(f"  共 {len(students)} 人，班级平均分: {avg:.1f}")
+                return "\n".join(lines)
+            
+            elif func == "rank_grade":
+                if params is None:
+                    return None
+                gy = params
+                students = self.db.fetchall(
+                    "SELECT * FROM students WHERE grade_code=? ORDER BY total_score DESC",
+                    (gy,)
+                )
+                gn = GRADE_NAMES.get(gy, gy)
+                if not students:
+                    return f"{gn}暂无数据"
+                lines = [f"【{gn} 排名】"]
+                for i, s in enumerate(students, 1):
+                    level, emoji = self.evaluator.get_grade_level(s["total_score"] / 6)
+                    lines.append(f"  #{i:>2} {s['name']:<6} {s['class_code']}班 | {s['total_score']:.0f}分 {emoji}{level}")
+                return "\n".join(lines)
+            
+            elif func == "rank_subject":
+                subject = params
+                idx = SUBJECTS.index(subject)
+                field = SUBJECT_FIELDS[idx]
+                students = self.db.fetchall(f"SELECT * FROM students ORDER BY {field} DESC")
+                if not students:
+                    return "[空] 暂无数据"
+                lines = [f"【全校{subject}排名】"]
+                for i, s in enumerate(students, 1):
+                    level, emoji = self.evaluator.get_grade_level(s[field])
+                    gn = GRADE_NAMES.get(s["grade_code"], s["grade_code"])
+                    lines.append(f"  #{i:>2} {s['name']:<6} {gn}{s['class_code']}班 | {s[field]:.0f}分 {emoji}{level}")
+                return "\n".join(lines)
+            
+            elif func == "rank_subject_class":
+                gy, cn, subject = params
+                idx = SUBJECTS.index(subject)
+                field = SUBJECT_FIELDS[idx]
+                students = self.db.fetchall(
+                    f"SELECT * FROM students WHERE grade_code=? AND class_code=? ORDER BY {field} DESC",
+                    (gy, cn)
+                )
+                gn = GRADE_NAMES.get(gy, gy)
+                if not students:
+                    return f"{gn}{cn}班暂无数据"
+                lines = [f"【{gn}{cn}班{subject}排名】"]
+                for i, s in enumerate(students, 1):
+                    level, emoji = self.evaluator.get_grade_level(s[field])
+                    lines.append(f"  #{i:>2} {s['name']:<6} {s[field]:.0f}分 {emoji}{level}")
+                return "\n".join(lines)
+            
+            elif func == "evaluate_class":
+                if params is None:
+                    return None
+                gy, cn = params
+                result = self.evaluator.evaluate_class(self.db, gy, cn)
+                if not result:
+                    gn = GRADE_NAMES.get(gy, gy)
+                    return f"{gn}{cn}班暂无数据"
+                return self._format_class_eval(result)
+            
+            elif func == "evaluate_grade":
+                gy = params
+                result = self.evaluator.evaluate_grade(self.db, gy)
+                if not result:
+                    gn = GRADE_NAMES.get(gy, gy)
+                    return f"{gn}暂无数据"
+                return self._format_grade_eval(result)
+            
+            elif func == "evaluate_student":
+                id_type, id_value = params
+                student = self.db.fetchone(
+                    f"SELECT * FROM students WHERE {id_type}=? LIMIT 1",
+                    (id_value,)
+                )
+                if student:
+                    eval_result = self.evaluator.evaluate_student(student)
+                    return self._format_student_eval(eval_result)
+                return f"未找到「{id_value}」相关信息"
+            
+            elif func == "stats":
+                return self._format_stats()
+            
+            elif func == "update_single":
+                name, subject, score = params
+                student = self.db.fetchone("SELECT * FROM students WHERE name=? LIMIT 1", (name,))
+                if not student:
+                    return f"未找到学生「{name}」"
+                idx = SUBJECTS.index(subject)
+                field = SUBJECT_FIELDS[idx]
+                self.db.execute(
+                    f"UPDATE students SET {field}=?, total_score=chinese+math+english+physics+chemistry+biology WHERE name=?",
+                    (score, name)
+                )
+                self.db.update_all_ranks()
+                student = self.db.fetchone("SELECT * FROM students WHERE name=? LIMIT 1", (name,))
+                self._refresh_table()
+                return f"已修改 {name} 的{subject}成绩为{score}分！新总分: {student['total_score']:.0f}"
+            
+            elif func == "export_excel":
+                self.export_excel()
+                return None
+            
+            elif func == "table":
+                self.open_table_dialog()
+                return None
+            
+            elif func == "add":
+                return None
+            
+            elif func == "delete_confirm":
+                _, value = params
+                reply = QMessageBox.question(
+                    self, "确认删除",
+                    f"确定要删除「{value}」吗？此操作不可恢复！",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    student = self.db.fetchone(
+                        "SELECT * FROM students WHERE student_id=? OR name=? LIMIT 1",
+                        (value, value)
+                    )
+                    if student:
+                        self.db.execute("DELETE FROM students WHERE id=?", (student["id"],))
+                        self.db.update_all_ranks()
+                        self._refresh_table()
+                        return f"已删除学生「{student['name']}」"
+                    return f"未找到「{value}」"
+                return "已取消删除"
+            
+            elif func == "ai_response":
+                return None
+            
+        except Exception as e:
+            return f"操作出错: {str(e)}\n{traceback.format_exc()[:200] if 'traceback' in dir() else ''}"
+        
+        return None
+    
+    def _format_student_detail(self, eval_result: Dict) -> str:
+        lines = [
+            f"【{eval_result['name']} 详细信息】",
+            f"学号: {eval_result['student_id']}",
+            f"班级: {eval_result['grade']}",
+            f"总分: {eval_result['total']:.0f} | 均分: {eval_result['average']}",
+            f"等级: {eval_result['emoji']} {eval_result['level']}",
+            f"班级排名: #{eval_result['class_rank']} | 年级排名: #{eval_result['grade_rank']}",
+            "-------- 各科成绩 --------"
+        ]
+        for d in eval_result['details']:
+            bar = "█" * int(d['score'] // 10)
+            lines.append(f"  {d['emoji']} {d['subject']}: {d['score']:.0f}分 {bar} ({d['level']})")
+        lines.append(f"\n评语: {eval_result['comments']}")
+        return "\n".join(lines)
+    
+    def _format_student_eval(self, eval_result: Dict) -> str:
+        lines = [
+            f"【{eval_result['name']} 学习评估报告】",
+            f"班级: {eval_result['grade']}",
+            f"总分: {eval_result['total']:.0f} | 均分: {eval_result['average']}",
+            f"等级: {eval_result['emoji']} {eval_result['level']}",
+            f"班级排名: #{eval_result['class_rank']} | 年级排名: #{eval_result['grade_rank']}",
+            "-------- 各科详情 --------"
+        ]
+        for d in eval_result['details']:
+            lines.append(f"  {d['emoji']} {d['subject']}: {d['score']:.0f}分 ({d['level']})")
+        if eval_result['strong_subjects']:
+            lines.append(f"\n优势科目: {'、'.join(eval_result['strong_subjects'])}")
+        if eval_result['weak_subjects']:
+            lines.append(f"待加强: {'、'.join(eval_result['weak_subjects'])}")
+        lines.append(f"\n评语:\n{eval_result['comments']}")
+        return "\n".join(lines)
+    
+    def _format_class_eval(self, result: Dict) -> str:
+        lines = [
+            f"【{result['grade']} 成绩分析报告】",
+            f"学生人数: {result['student_count']} 人",
+            f"班级均分: {result['class_avg']} 分",
+            f"及格率(>=360分): {result['pass_count']}/{result['student_count']} ({result['pass_count']/result['student_count']*100:.0f}%)",
+            f"优秀率(均分>=90): {result['excellent_count']}/{result['student_count']} ({result['excellent_count']/result['student_count']*100:.0f}%)",
+            "-------- 各科平均分 --------"
+        ]
+        for subj, avg in result['subject_averages'].items():
+            level, emoji = self.evaluator.get_grade_level(avg)
+            lines.append(f"  {emoji} {subj}: {avg}分 ({level})")
+        
+        lines.append("-------- 等级分布 --------")
+        for level, count in result['level_distribution'].items():
+            bar = "█" * count
+            if count > 0:
+                lines.append(f"  {level}: {count}人 {bar}")
+        
+        lines.append(f"\n最高分: {result['max_student']} - {result['max_score']:.0f}分")
+        lines.append(f"最低分: {result['min_student']} - {result['min_score']:.0f}分")
+        
+        lines.append("\n【AI点评】")
+        lines.append(self._generate_class_comment(result))
+        
+        return "\n".join(lines)
+    
+    def _format_grade_eval(self, result: Dict) -> str:
+        gn = GRADE_NAMES.get(result['grade_code'], result['grade_code'])
+        lines = [
+            f"【{gn} 年级整体分析】",
+            f"总人数: {result['total_students']} | 班级数: {result['class_count']}",
+            f"年级均分: {result['grade_avg']}",
+            "-------- 各班级对比 --------"
+        ]
+        for cls in sorted(result['classes'], key=lambda c: c['class_avg'], reverse=True):
+            level, emoji = self.evaluator.get_grade_level(cls['class_avg'])
+            lines.append(f"  {emoji} {cls['grade']}: {cls['class_avg']}分 ({cls['student_count']}人) {level}")
+        
+        lines.append("\n【AI点评】")
+        lines.append(self._generate_grade_comment(result))
+        
+        return "\n".join(lines)
+    
+    def _format_stats(self) -> str:
+        total = self.db.fetchone("SELECT COUNT(*) as cnt FROM students")
+        count = total["cnt"] if total else 0
+        if count == 0:
+            return "系统中暂无学生数据"
+        
+        stats = self.db.fetchone("SELECT AVG(total_score) as avg, MIN(total_score) as min_s, MAX(total_score) as max_s FROM students")
+        pass_count = self.db.fetchone("SELECT COUNT(*) as cnt FROM students WHERE total_score >= 360")
+        top = self.db.fetchone("SELECT * FROM students ORDER BY total_score DESC LIMIT 1")
+        
+        grade_dist = self.db.fetchall("SELECT grade_code, COUNT(*) as cnt FROM students GROUP BY grade_code")
+        grade_info = ""
+        for gd in grade_dist:
+            gn = GRADE_NAMES.get(gd["grade_code"], gd["grade_code"])
+            grade_info += f"\n  {gn}: {gd['cnt']}人"
+        
+        top_info = ""
+        if top:
+            top_info = f"\n第一名: {top['name']} ({top['student_id']}) 总分: {top['total_score']:.0f}"
+        
+        return (
+            f"【系统数据概览】\n"
+            f"学生总数: {count} 人{grade_info}\n"
+            f"平均总分: {stats['avg']:.1f}\n"
+            f"总分范围: {stats['min_s']:.0f} - {stats['max_s']:.0f}\n"
+            f"及格率(>=360分): {pass_count['cnt']/count*100:.0f}%"
+            f"{top_info}"
+        )
+    
+    def _generate_class_comment(self, result: Dict) -> str:
+        avg = result['class_avg']
+        pass_pct = result['pass_count'] / result['student_count'] * 100
+        
+        parts = []
+        if avg >= 85:
+            parts.append(f"{result['grade']}整体表现非常出色！班级均分{avg}分。")
+        elif avg >= 75:
+            parts.append(f"{result['grade']}表现良好，均分{avg}分，及格率{pass_pct:.0f}%。")
+        elif avg >= 65:
+            parts.append(f"{result['grade']}处于中等水平，均分{avg}分。")
+        else:
+            parts.append(f"{result['grade']}成绩偏低（均分{avg}分）。")
+        
+        best_subj = max(result['subject_averages'], key=result['subject_averages'].get)
+        worst_subj = min(result['subject_averages'], key=result['subject_averages'].get)
+        parts.append(f"最强科目是「{best_subj}」（{result['subject_averages'][best_subj]}分），需加强的是「{worst_subj}」（{result['subject_averages'][worst_subj]}分）。")
+        
+        good = result['level_distribution'].get("优秀", 0) + result['level_distribution'].get("良好", 0)
+        fail = result['level_distribution'].get("不及格", 0)
+        if good > fail:
+            parts.append(f"班级整体向好，优秀和良好人数{fail}人，不及格{fail}人。")
+        elif fail > good:
+            parts.append(f"需重点关注不及格的{fail}位同学。")
+        
+        parts.append(random.choice([
+            "继续加油，未来可期！", "一分耕耘一分收获，继续努力！",
+            "保持势头，争取更大进步！", "学习是场马拉松，坚持就是胜利！"
+        ]))
+        return "\n".join(parts)
+    
+    def _generate_grade_comment(self, result: Dict) -> str:
+        classes = sorted(result['classes'], key=lambda c: c['class_avg'], reverse=True)
+        best = classes[0] if classes else None
+        worst = classes[-1] if classes else None
+        gn = GRADE_NAMES.get(result['grade_code'], result['grade_code'])
+        
+        parts = [f"{gn}共有{result['total_students']}位同学分布在{result['class_count']}个班级中。"]
+        if best and worst:
+            diff = best['class_avg'] - worst['class_avg']
+            if diff > 15:
+                parts.append(f"各班差距较大：最好的是{best['grade']}（均分{best['class_avg']}），需加油的是{worst['grade']}（均分{worst['class_avg']}）。建议加强班际交流。")
+            else:
+                parts.append(f"各班发展较均衡：{best['grade']}最好（均分{best['class_avg']}），{worst['grade']}需加油（均分{worst['class_avg']}）。")
+        
+        parts.append(random.choice([
+            "各班级之间多交流学习经验，共同进步！",
+            "整体态势良好，继续努力！",
+            "希望各班级齐头并进，共创佳绩！"
+        ]))
+        return "\n".join(parts)
+    
+    def _generate_ai_comment(self, func: str, params: Any, original_text: str):
+        """生成AI额外点评 - 修复版：保存worker引用防止GC崩溃"""
+        try:
+            db_context = self.ai_engine.deepseek.build_context(self.db)
+            
+            if func == "evaluate_class" and params:
+                gy, cn = params
+                gn = GRADE_NAMES.get(gy, gy)
+                result = self.evaluator.evaluate_class(self.db, gy, cn)
+                if result:
+                    prompt = f"我已查看了{gn}{cn}班的成绩数据（均分{result['class_avg']}，{result['student_count']}人）。请给我一段简短温暖的点评（50字以内），鼓励这个班级。"
+            elif func == "evaluate_grade" and params:
+                gy = params
+                result = self.evaluator.evaluate_grade(self.db, gy)
+                if result:
+                    prompt = f"我已分析了{GRADE_NAMES.get(gy, gy)}的整体成绩（{result['total_students']}人，{result['class_count']}个班）。请给我一段简短温暖的鼓励（50字以内）。"
+            elif func == "evaluate_student" and params:
+                _, value = params
+                prompt = f"请给学生「{value}」一句简短的学习鼓励（20字以内）。"
+            elif func == "rank_total":
+                prompt = "请用一句话鼓励全校学生继续努力（20字以内）。"
+            elif func == "stats":
+                prompt = "请用一句话总结成绩管理系统的作用（20字以内）。"
+            else:
+                return
+            
+            if self.ai_engine.deepseek.available:
+                messages = [
+                    {"role": "system", "content": "你是一个温暖的AI教育助手，用简短、鼓励的话语回复。"},
+                    {"role": "user", "content": prompt}
+                ]
+                worker = AIWorker(self.ai_engine.deepseek, messages, temperature=0.9)
+                # 保存引用防止GC导致SIGSEGV崩溃！
+                self._ai_workers.append(worker)
+                # 连接信号 - 使用lambda捕获worker本身以便后续清理
+                worker.finished.connect(lambda resp, w=worker: self._on_ai_comment_finished(resp, w))
+                worker.error.connect(lambda err, w=worker: self._on_ai_comment_error(err, w))
+                worker.start()
+        except Exception as e:
+            print(f"[AI Comment] Error: {e}")
+    
+    def _on_ai_comment_finished(self, response: str, worker: AIWorker):
+        """AI评论完成后的回调 - 安全清理"""
+        if response and len(response) > 5:
+            try:
+                self._append_message("system", f"[AI] {response}")
+            except:
+                pass  # 窗口已关闭则忽略
+        # 安全清理worker引用
+        self._remove_ai_worker(worker)
+    
+    def _on_ai_comment_error(self, error_msg: str, worker: AIWorker):
+        """AI评论错误回调 - 安全清理"""
+        self._remove_ai_worker(worker)
+    
+    def _remove_ai_worker(self, worker: AIWorker):
+        """安全移除AIWorker引用"""
+        try:
+            worker.safe_stop()
+            worker.quit()
+            worker.wait(1000)
+            if worker in self._ai_workers:
+                self._ai_workers.remove(worker)
+        except:
+            pass
+    
+    # ========== 按钮功能 (使用RankSelectDialog下拉选择) ==========
+    
+    def show_all(self):
+        self.input_box.setText("显示所有学生")
+        self.send_message()
+    
+    def show_rank_total(self):
+        self.input_box.setText("总分排名")
+        self.send_message()
+    
+    def show_rank_class(self):
+        """班级排名 - 弹出下拉选择框"""
+        try:
+            dialog = RankSelectDialog(self.db, 'class', self)
+            if dialog.exec_() == QDialog.Accepted and dialog.result_params:
+                gy, cn = dialog.result_params
+                gn = GRADE_NAMES.get(gy, gy)
+                self.input_box.setText(f"{gn}{cn}班排名")
+                self.send_message()
+            return
+        except Exception as e:
+            print(f"[RankSelectDialog.class] Error: {e}")
+            self.input_box.setText("班级排名")
+            self.send_message()
+    
+    def show_rank_grade(self):
+        """年级排名 - 弹出下拉选择框"""
+        try:
+            dialog = RankSelectDialog(self.db, 'grade', self)
+            if dialog.exec_() == QDialog.Accepted and dialog.result_params:
+                gy = dialog.result_params
+                gn = GRADE_NAMES.get(gy, gy)
+                self.input_box.setText(f"{gn}年级排名")
+                self.send_message()
+            return
+        except Exception as e:
+            print(f"[RankSelectDialog.grade] Error: {e}")
+            self.input_box.setText("年级排名")
+            self.send_message()
+    
+    def show_menu(self):
+        self.input_box.setText("菜单")
+        self.send_message()
+    
+    def _show_rank_subject(self):
+        """单科排名 - 弹出下拉选择框"""
+        try:
+            dialog = RankSelectDialog(self.db, 'subject', self)
+            if dialog.exec_() == QDialog.Accepted and dialog.result_params:
+                subject = dialog.result_params
+                self.input_box.setText(f"{subject}排名")
+                self.send_message()
+            return
+        except Exception as e:
+            print(f"[RankSelectDialog.subject] Error: {e}")
+            self.input_box.setText("总分排名")
+            self.send_message()
+    
+    def export_excel(self):
+        try:
+            from openpyxl import Workbook
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "导出Excel", "学生成绩管理系统.xlsx", "Excel文件 (*.xlsx)"
+            )
+            if not file_path:
+                return
+            
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "学生成绩"
+            
+            headers = ["学号", "姓名", "性别", "年级", "班级", "语文", "数学", "英语", "物理", "化学", "生物", "总分"]
+            ws.append(headers)
+            
+            students = self.db.fetchall("SELECT * FROM students ORDER BY grade_code, class_code, student_id")
+            for s in students:
+                ws.append([
+                    s["student_id"], s["name"], s["gender"],
+                    GRADE_NAMES.get(s["grade_code"], s["grade_code"]),
+                    f"{s['class_code']}班",
+                    s["chinese"], s["math"], s["english"],
+                    s["physics"], s["chemistry"], s["biology"],
+                    s["total_score"]
+                ])
+            
+            wb.save(file_path)
+            QMessageBox.information(self, "成功", f"已导出 {len(students)} 条数据到\n{file_path}")
+            self._append_message("system", f"已导出 {len(students)} 条数据到 Excel 文件")
+        except ImportError:
+            QMessageBox.warning(self, "导出失败", "请先安装 openpyxl:\n  pip install openpyxl")
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+    
+    def open_table_dialog(self):
+        """打开表格对话框"""
+        try:
+            dialog = DataTableDialog(self.db, self)
+            dialog.exec_()
+            self._refresh_table()
+            self._update_grade_filter()
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"打开表格视图时出错: {e}")
+    
+    def closeEvent(self, event):
+        try:
+            self.db.close()
+        except:
+            pass
+        event.accept()
+
+
+class DataTableDialog(QDialog):
+    """数据表格编辑对话框"""
+    
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("学生成绩数据表 - 编辑视图")
+        self.resize(1100, 650)
+        self.setStyleSheet("""
+            QDialog { background: #f5f7fa; }
+            QTableWidget { background: white; border: 1px solid #ddd; border-radius: 6px; gridline-color: #eee; font-size: 13px; }
+            QTableWidget::item { padding: 4px 8px; }
+            QTableWidget::item:selected { background: #667eea; color: white; }
+            QHeaderView::section { background: #667eea; color: white; padding: 8px; border: none; font-weight: bold; }
+            QPushButton { padding: 8px 16px; border: none; border-radius: 4px; background: #667eea; color: white; }
+            QPushButton:hover { background: #5a6fd6; }
+        """)
+        self._setup_ui()
+        self.load_data()
+    
+    def _setup_ui(self):
+        layout = QVBoxLayout()
+        
+        toolbar = QHBoxLayout()
+        
+        self.grade_filter = QComboBox()
+        self.grade_filter.addItem("全部年级")
+        try:
+            grades = self.db.get_available_grades()
+            for g in grades:
+                self.grade_filter.addItem(f"{GRADE_NAMES.get(g, g)}({g})")
+        except:
+            pass
+        self.grade_filter.currentIndexChanged.connect(self.load_data)
+        toolbar.addWidget(QLabel("年级:"))
+        toolbar.addWidget(self.grade_filter)
+        
+        self.class_filter = QComboBox()
+        self.class_filter.addItem("全部班级")
+        self._update_class_filter()
+        self.class_filter.currentIndexChanged.connect(self.load_data)
+        toolbar.addWidget(QLabel("班级:"))
+        toolbar.addWidget(self.class_filter)
+        toolbar.addStretch()
+        
+        refresh_btn = QPushButton("刷新")
+        refresh_btn.clicked.connect(self.load_data)
+        toolbar.addWidget(refresh_btn)
+        
+        save_btn = QPushButton("保存修改")
+        save_btn.clicked.connect(self.save_changes)
+        toolbar.addWidget(save_btn)
+        
+        export_btn = QPushButton("导出Excel")
+        export_btn.clicked.connect(self.export_excel)
+        toolbar.addWidget(export_btn)
+        
+        layout.addLayout(toolbar)
+        
+        self.table = QTableWidget()
+        self.table.setColumnCount(12)
+        self.table.setHorizontalHeaderLabels(
+            ["学号", "姓名", "性别", "年级", "班级", "语文", "数学", "英语", "物理", "化学", "生物", "总分"]
+        )
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        self.table.setSortingEnabled(True)
+        self.table.itemChanged.connect(self.on_item_changed)
+        layout.addWidget(self.table)
+        
+        self.stats_label = QLabel()
+        self.stats_label.setStyleSheet("padding: 8px; background: white; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;")
+        layout.addWidget(self.stats_label)
+        
+        self.setLayout(layout)
+    
+    def _update_class_filter(self):
+        """更新班级筛选"""
+        try:
+            classes = self.db.get_available_classes()
+            for c in classes:
+                self.class_filter.addItem(f"{c}班")
+        except:
+            pass
+    
+    def load_data(self):
+        try:
+            self.table.itemChanged.disconnect()
+        except:
+            pass
+        
+        self.table.setSortingEnabled(False)
+        
+        grade_text = self.grade_filter.currentText()
+        class_text = self.class_filter.currentText()
+        
+        sql = "SELECT * FROM students"
+        conditions = []
+        
+        for gname, gcode in GRADE_CODES.items():
+            if gname in grade_text and "全部" not in grade_text:
+                conditions.append(f"grade_code='{gcode}'")
+                break
+        
+        if class_text != "全部班级":
+            class_code = class_text[:2]
+            conditions.append(f"class_code='{class_code}'")
+        
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY grade_code, class_code, student_id"
+        
+        students = self.db.fetchall(sql)
+        self.students_data = [dict(s) for s in students]
+        
+        self.table.setRowCount(len(students))
+        
+        for row, s in enumerate(students):
+            gn = GRADE_NAMES.get(s["grade_code"], s["grade_code"])
+            items = [
+                s["student_id"], s["name"], s["gender"],
+                gn, f"{s['class_code']}班",
+                str(int(s["chinese"])), str(int(s["math"])),
+                str(int(s["english"])), str(int(s["physics"])),
+                str(int(s["chemistry"])), str(int(s["biology"])),
+                str(int(s["total_score"]))
+            ]
+            for col, text in enumerate(items):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter)
+                if 5 <= col <= 10:
+                    item.setFlags(item.flags() | Qt.ItemIsEditable)
+                    item.setBackground(QColor(240, 255, 240))
+                else:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(row, col, item)
+        
+        if students:
+            totals = [s["total_score"] for s in students]
+            avg = sum(totals) / len(totals)
+            self.stats_label.setText(
+                f"共 {len(students)} 名学生 | 总分范围: {min(totals):.0f} - {max(totals):.0f} | 平均分: {avg:.1f}"
+            )
+        else:
+            self.stats_label.setText("暂无数据")
+        
+        self.modified_cells = {}
+        self.table.setSortingEnabled(True)
+        self.table.itemChanged.connect(self.on_item_changed)
+    
+    def on_item_changed(self, item):
+        row = item.row()
+        col = item.column()
+        if 5 <= col <= 10:
+            try:
+                val = float(item.text())
+                if val < 0 or val > 100:
+                    QMessageBox.warning(self, "无效输入", "成绩必须在0-100之间")
+                    self.load_data()
+                    return
+                
+                scores = []
+                for c in range(5, 11):
+                    cell = self.table.item(row, c)
+                    scores.append(float(cell.text()) if cell else 0)
+                
+                total = sum(scores)
+                total_item = self.table.item(row, 11)
+                if total_item:
+                    total_item.setText(str(int(total)))
+                
+                student_id_item = self.table.item(row, 0)
+                if student_id_item:
+                    self.modified_cells[student_id_item.text()] = scores
+                    
+            except ValueError:
+                pass
+    
+    def save_changes(self):
+        if not self.modified_cells:
+            QMessageBox.information(self, "提示", "没有需要保存的修改")
+            return
+        
+        try:
+            count = 0
+            for sid, scores in self.modified_cells.items():
+                self.db.execute(
+                    "UPDATE students SET chinese=?, math=?, english=?, physics=?, chemistry=?, biology=?, total_score=? WHERE student_id=?",
+                    (scores[0], scores[1], scores[2], scores[3], scores[4], scores[5], sum(scores), sid)
+                )
+                count += 1
+            
+            self.db.update_all_ranks()
+            self.modified_cells = {}
+            QMessageBox.information(self, "成功", f"已保存 {count} 名学生的修改，并更新了排名")
+            self.load_data()
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", str(e))
+    
+    def export_excel(self):
+        try:
+            from openpyxl import Workbook
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "导出Excel", "学生成绩管理系统.xlsx", "Excel文件 (*.xlsx)"
+            )
+            if not file_path:
+                return
+            
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "学生成绩"
+            headers = ["学号", "姓名", "性别", "年级", "班级", "语文", "数学", "英语", "物理", "化学", "生物", "总分"]
+            ws.append(headers)
+            
+            students = self.db.fetchall("SELECT * FROM students ORDER BY grade_code, class_code, student_id")
+            for s in students:
+                ws.append([
+                    s["student_id"], s["name"], s["gender"],
+                    GRADE_NAMES.get(s["grade_code"], s["grade_code"]),
+                    f"{s['class_code']}班",
+                    s["chinese"], s["math"], s["english"],
+                    s["physics"], s["chemistry"], s["biology"],
+                    s["total_score"]
+                ])
+            
+            wb.save(file_path)
+            QMessageBox.information(self, "成功", f"已导出 {len(students)} 条数据到\n{file_path}")
+        except ImportError:
+            QMessageBox.warning(self, "导出失败", "请先安装 openpyxl: pip install openpyxl")
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+
+
+class RankSelectDialog(QDialog):
+    """排名选择对话框 - 提供年级/班级/科目下拉选择"""
+    
+    def __init__(self, db: Database, rank_type: str, parent=None):
+        """
+        rank_type: 'class' 班级排名, 'grade' 年级排名, 'subject' 单科排名
+        """
+        super().__init__(parent)
+        self.db = db
+        self.rank_type = rank_type
+        self.result_params = None  # 用户选择的结果
+        self.setWindowTitle("选择排名范围")
+        self.setFixedSize(400, 280)
+        self.setStyleSheet("""
+            QDialog { background: white; border-radius: 10px; }
+            QLabel { font-size: 15px; padding: 6px; color: #333; }
+            QComboBox { padding: 8px 12px; font-size: 14px; border: 2px solid #e0e0e0; border-radius: 6px; background: white; min-height: 22px; }
+            QComboBox:hover { border-color: #667eea; }
+            QComboBox:focus { border-color: #667eea; }
+            QComboBox::drop-down { border: none; width: 30px; }
+            QPushButton { padding: 10px 28px; font-size: 14px; font-weight: bold; border: none; border-radius: 6px; min-height: 20px; }
+            QPushButton:hover { background: #5a6fd6; }
+        """)
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        layout = QVBoxLayout()
+        layout.setSpacing(14)
+        layout.setContentsMargins(30, 24, 30, 24)
+        
+        # 标题
+        type_names = {'class': '班级排名', 'grade': '年级排名', 'subject': '单科排名'}
+        title = QLabel(f"📊 {type_names.get(self.rank_type, '排名')}")
+        title.setFont(get_font(18, True))
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #667eea; padding: 4px;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        
+        # 年级选择
+        layout.addWidget(QLabel("选择年级:"))
+        self.grade_combo = QComboBox()
+        try:
+            grades = self.db.get_available_grades()
+            for g in grades:
+                self.grade_combo.addItem(f"{GRADE_NAMES.get(g, g)}({g})", g)
+        except:
+            self.grade_combo.addItem("高一", "01")
+            self.grade_combo.addItem("高二", "02")
+            self.grade_combo.addItem("高三", "03")
+        self.grade_combo.setFont(get_font(14))
+        layout.addWidget(self.grade_combo)
+        
+        # 班级选择 (针对班级排名)
+        self.class_combo = None
+        if self.rank_type == 'class':
+            self.class_label = QLabel("选择班级:")
+            layout.addWidget(self.class_label)
+            self.class_combo = QComboBox()
+            self.class_combo.setFont(get_font(14))
+            self._update_class_list()
+            self.grade_combo.currentIndexChanged.connect(self._update_class_list)
+            layout.addWidget(self.class_combo)
+        
+        # 科目选择 (针对单科排名)
+        self.subject_combo = None
+        if self.rank_type == 'subject':
+            self.subject_label = QLabel("选择科目:")
+            layout.addWidget(self.subject_label)
+            self.subject_combo = QComboBox()
+            self.subject_combo.setFont(get_font(14))
+            for subj in SUBJECTS:
+                self.subject_combo.addItem(subj)
+            layout.addWidget(self.subject_combo)
+        
+        layout.addSpacing(12)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("查看排名")
+        ok_btn.setStyleSheet(
+            "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #667eea, stop:1 #764ba2); color: white; }"
+            "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6fd6, stop:1 #6a41a2); }"
+        )
+        ok_btn.clicked.connect(self._on_ok)
+        btn_layout.addWidget(ok_btn)
+        
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setStyleSheet(
+            "QPushButton { background: #95a5a6; color: white; } QPushButton:hover { background: #7f8c8d; }"
+        )
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+    
+    def _update_class_list(self):
+        """根据年级更新班级列表"""
+        try:
+            self.class_combo.blockSignals(True)
+            self.class_combo.clear()
+            grade_code = self.grade_combo.currentData()
+            classes = self.db.get_available_classes(grade_code)
+            for c in classes:
+                self.class_combo.addItem(f"{c}班", c)
+            self.class_combo.blockSignals(False)
+        except:
+            pass
+    
+    def _on_ok(self):
+        grade_code = self.grade_combo.currentData()
+        
+        if self.rank_type == 'class':
+            if not self.class_combo:
+                self.reject()
+                return
+            class_code = self.class_combo.currentData()
+            if not class_code:
+                QMessageBox.warning(self, "提示", "请选择班级")
+                return
+            self.result_params = (grade_code, class_code)
+        
+        elif self.rank_type == 'grade':
+            self.result_params = grade_code
+        
+        elif self.rank_type == 'subject':
+            subject = self.subject_combo.currentText()
+            self.result_params = subject
+        
+        self.accept()
+
+
+class AddStudentDialog(QDialog):
+    """添加学生对话框"""
+    
+    def __init__(self, db: Database, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.student_id = None
+        self.setWindowTitle("添加新学生")
+        self.setFixedSize(420, 380)
+        self.setStyleSheet("""
+            QDialog { background: white; }
+            QLabel { font-size: 14px; padding: 4px; }
+            QLineEdit { padding: 8px; font-size: 14px; border: 1px solid #ddd; border-radius: 4px; }
+            QLineEdit:focus { border-color: #667eea; }
+            QComboBox { padding: 6px; font-size: 14px; border: 1px solid #ddd; border-radius: 4px; }
+            QPushButton { padding: 10px 20px; font-size: 14px; border: none; border-radius: 4px; background: #667eea; color: white; }
+            QPushButton:hover { background: #5a6fd6; }
+        """)
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        layout = QVBoxLayout()
+        form = QFormLayout()
+        
+        self.sid_input = QLineEdit()
+        self.sid_input.setPlaceholderText("8位学号，如: 01010099")
+        form.addRow("学号:", self.sid_input)
+        
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("学生姓名")
+        form.addRow("姓名:", self.name_input)
+        
+        self.gender_combo = QComboBox()
+        self.gender_combo.addItems(["男", "女"])
+        form.addRow("性别:", self.gender_combo)
+        
+        self.score_inputs = []
+        for subj in SUBJECTS:
+            inp = QLineEdit()
+            inp.setPlaceholderText("0-100")
+            self.score_inputs.append(inp)
+            form.addRow(f"{subj}:", inp)
+        
+        layout.addLayout(form)
+        
+        btns = QHBoxLayout()
+        ok_btn = QPushButton("确定添加")
+        ok_btn.clicked.connect(self._on_ok)
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setStyleSheet("QPushButton { background: #95a5a6; } QPushButton:hover { background: #7f8c8d; }")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(ok_btn)
+        btns.addWidget(cancel_btn)
+        layout.addLayout(btns)
+        
+        self.setLayout(layout)
+    
+    def _on_ok(self):
+        sid = self.sid_input.text().strip()
+        name = self.name_input.text().strip()
+        gender = self.gender_combo.currentText()
+        
+        if not sid or not name:
+            QMessageBox.warning(self, "错误", "学号和姓名不能为空")
+            return
+        
+        # 校验学号
+        valid, info = StudentIDValidator.parse(sid)
+        if not valid:
+            QMessageBox.warning(self, "学号格式错误", info)
+            return
+        
+        # 检查重复
+        exist = self.db.fetchone("SELECT student_id FROM students WHERE student_id=?", (sid,))
+        if exist:
+            QMessageBox.warning(self, "错误", f"学号 {sid} 已存在！")
+            return
+        
+        # 解析成绩
+        scores = []
+        for inp in self.score_inputs:
+            try:
+                s = float(inp.text()) if inp.text().strip() else 0
+                if s < 0 or s > 100:
+                    QMessageBox.warning(self, "错误", "成绩必须在0-100之间")
+                    return
+                scores.append(s)
+            except ValueError:
+                QMessageBox.warning(self, "错误", "请输入有效的成绩数字")
+                return
+        
+        total = sum(scores)
+        
+        try:
+            self.db.execute("""
+                INSERT INTO students 
+                (student_id, name, gender, grade_code, class_code,
+                 chinese, math, english, physics, chemistry, biology, total_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (sid, name, gender, info["grade_code"], info["class_code"],
+                  scores[0], scores[1], scores[2], scores[3], scores[4], scores[5], total))
+            
+            self.db.update_all_ranks()
+            self.student_id = sid
+            self.accept()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"添加失败: {e}")
+
+
+# ===================== 主入口 =====================
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    
     font = QFont("Microsoft YaHei", 10)
+    font.setStyleStrategy(QFont.PreferAntialias)
     app.setFont(font)
     
-    login = LoginDialog(db)
-    if login.exec_() == QDialog.Accepted:
-        window = MainWindow(db, ai)
-        window.show()
-        sys.exit(app.exec_())
+    # 登录
+    login = LoginDialog()
+    if login.exec_() != QDialog.Accepted:
+        return
+    
+    window = MainWindow()
+    window.show()
+    
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
