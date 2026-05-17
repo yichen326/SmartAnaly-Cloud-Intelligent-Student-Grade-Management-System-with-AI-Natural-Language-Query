@@ -203,6 +203,46 @@ python main.py
 
 ---
 
+## 📦 打包发布
+
+### 一键打包（推荐 Windows）
+
+```bash
+build.bat
+```
+
+自动完成环境检测、依赖安装、PyInstaller打包，输出到 `dist\智析云途.exe`。
+
+### 手动打包
+
+```bash
+pip install pyinstaller
+pyinstaller build.spec
+```
+
+### 打包参数说明
+
+| 参数 | 说明 |
+|------|------|
+| `--onefile` | 单文件模式，所有依赖打包到一个exe |
+| `--windowed` | 无控制台窗口，适配GUI应用 |
+| `--add-data` | 附带数据文件（config.json, students_data.txt等） |
+
+### 打包后部署
+
+将 `dist\` 目录下的以下文件一同分发：
+
+```
+dist/
+├── 智析云途.exe          # 主程序
+├── config.json           # 配置文件（需填写API Key）
+└── students_data.txt     # 初始数据（可选）
+```
+
+> 💡 首次运行时，系统会自动创建 `school_final.db` 数据库文件。
+
+---
+
 ## 📖 使用指南
 
 ### 🎮 聊天指令大全

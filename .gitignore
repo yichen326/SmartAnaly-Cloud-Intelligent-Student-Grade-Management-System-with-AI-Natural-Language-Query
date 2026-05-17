@@ -1,0 +1,30 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 打包输出
+dist/
+build/
+*.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统
+*.log
+*.tmp
+thumbs.db
+.DS_Store
+
+# 数据库（自动生成）
+school_final.db
+
+# 数据文件（用户数据）
+students_data.txt
+
+# 配置文件中的敏感信息（建议删除 API Key）
+config.json

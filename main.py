@@ -70,9 +70,52 @@ except ImportError:
 
 # ===================== 配置区 =====================
 
-DEEPSEEK_API_KEY = "sk-032f75440f6542d690f9ccc523b01cd3"
-DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
+def _load_config() -> dict:
+    """从 config.json 加载配置，若不存在则使用默认值"""
+    import os as _os
+    _defaults = {
+        "deepseek": {
+            "api_key": "",
+            "api_url": "https://api.deepseek.com/v1/chat/completions",
+            "model": "deepseek-chat"
+        },
+        "files": {
+            "data_file": "students_data.txt",
+            "db_file": "school_final.db"
+        },
+        "login": {
+            "username": "admin",
+            "password": "123456"
+        }
+    }
+    _config_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.json")
+    if _os.path.exists(_config_path):
+        try:
+            import json as _json
+            with open(_config_path, 'r', encoding='utf-8') as _f:
+                _user_cfg = _json.load(_f)
+            # 深度合并
+            def _deep_merge(base, override):
+                for k, v in override.items():
+                    if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+                        _deep_merge(base[k], v)
+                    else:
+                        base[k] = v
+            _deep_merge(_defaults, _user_cfg)
+        except Exception as _e:
+            print(f"[配置] 加载 config.json 失败: {_e}，使用默认值")
+    # 兼容环境变量覆盖（用于敏感信息）
+    import os as _os2
+    _env_key = _os2.environ.get("DEEPSEEK_API_KEY", "")
+    if _env_key:
+        _defaults["deepseek"]["api_key"] = _env_key
+    return _defaults
+
+_CONFIG = _load_config()
+
+DEEPSEEK_API_KEY = _CONFIG["deepseek"]["api_key"]
+DEEPSEEK_API_URL = _CONFIG["deepseek"]["api_url"]
+DEEPSEEK_MODEL = _CONFIG["deepseek"]["model"]
 
 GRADE_NAMES = {"01": "高一", "02": "高二", "03": "高三"}
 GRADE_CODES = {"高一": "01", "高二": "02", "高三": "03"}
@@ -89,8 +132,20 @@ GRADE_LEVELS = [
 SUBJECTS = ["语文", "数学", "英语", "物理", "化学", "生物"]
 SUBJECT_FIELDS = ["chinese", "math", "english", "physics", "chemistry", "biology"]
 
-DATA_FILE = "students_data.txt"
-DB_FILE = "school_final.db"
+# 数据文件路径：优先使用可执行文件所在目录下的文件
+if getattr(sys, 'frozen', False):
+    # 打包后，数据文件在可执行文件所在目录
+    _BASE_DIR = os.path.dirname(sys.executable)
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DATA_FILE = os.path.join(_BASE_DIR, _CONFIG["files"]["data_file"])
+DB_FILE = os.path.join(_BASE_DIR, _CONFIG["files"]["db_file"])
+CONFIG_FILE = os.path.join(_BASE_DIR, "config.json")
+
+# 登录凭据
+_LOGIN_USERNAME = _CONFIG["login"]["username"]
+_LOGIN_PASSWORD = _CONFIG["login"]["password"]
 
 # ===================== 学号校验 =====================
 
@@ -1036,7 +1091,7 @@ class LoginDialog(QDialog):
         self.password.returnPressed.connect(self.check_login)
 
     def check_login(self):
-        if self.username.text() == "admin" and self.password.text() == "123456":
+        if self.username.text() == _LOGIN_USERNAME and self.password.text() == _LOGIN_PASSWORD:
             self.accept()
         else:
             QMessageBox.warning(self, "登录失败", "用户名或密码错误！")
