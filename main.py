@@ -71,7 +71,8 @@ except ImportError:
 # ===================== 配置区 =====================
 
 def _load_config() -> dict:
-    """从 config.json 加载配置，若不存在则使用默认值"""
+    """从 config.json 加载配置，若不存在则使用默认值
+    优先读取可执行文件/exe所在目录下的 config.json，支持打包后修改配置"""
     import os as _os
     _defaults = {
         "deepseek": {
@@ -88,7 +89,12 @@ def _load_config() -> dict:
             "password": "123456"
         }
     }
-    _config_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.json")
+    # 优先使用可执行文件所在目录（支持打包后修改 config.json）
+    if getattr(sys, 'frozen', False):
+        _config_dir = _os.path.dirname(sys.executable)
+    else:
+        _config_dir = _os.path.dirname(_os.path.abspath(__file__))
+    _config_path = _os.path.join(_config_dir, "config.json")
     if _os.path.exists(_config_path):
         try:
             import json as _json
@@ -99,9 +105,16 @@ def _load_config() -> dict:
                 for k, v in override.items():
                     if k in base and isinstance(base[k], dict) and isinstance(v, dict):
                         _deep_merge(base[k], v)
+                    elif isinstance(v, str) and not v:
+                        # 跳过空字符串，保留默认值（防止外部 config.json 的空 api_key 覆盖默认密钥）
+                        continue
                     else:
                         base[k] = v
             _deep_merge(_defaults, _user_cfg)
+            
+            # 最后兜底：如果 api_key 仍然为空，提醒用户配置
+            if not _defaults.get("deepseek", {}).get("api_key"):
+                print("[配置] 警告: DeepSeek API 密钥未配置，请在 config.json 中设置 api_key 或通过环境变量 DEEPSEEK_API_KEY 提供")
         except Exception as _e:
             print(f"[配置] 加载 config.json 失败: {_e}，使用默认值")
     # 兼容环境变量覆盖（用于敏感信息）
