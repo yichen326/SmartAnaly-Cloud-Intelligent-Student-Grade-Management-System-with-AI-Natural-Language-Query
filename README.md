@@ -2,7 +2,7 @@
 
 > **让数据管理更智能，让成绩分析有温度** 📚✨
 
-基于 **DeepSeek API + PyQt5 + SQLite3** 的智能学生成绩管理系统，支持自然语言交互、数据可视化编辑、AI智能分析，专为中小学成绩管理场景设计。
+基于 **DeepSeek V4 Flash API + PyQt5 + SQLite3** 的智能学生成绩管理系统，支持自然语言交互、数据可视化编辑、AI智能分析，专为中小学成绩管理场景设计。
 
 ---
 
@@ -78,7 +78,17 @@
 | **自由问答** | 非固定指令由DeepSeek AI基于数据库上下文智能回复 |
 | **人性化点评** | 每次分析后AI生成温暖有温度的小评语 |
 
-### 💬 自然语言交互
+### 💬 AI自然语言交互（核心亮点）
+
+采用 **DeepSeek V4 Flash 大模型** 驱动的智能对话引擎，支持五种复杂交互场景：
+
+| 场景类型 | 示例 | AI处理方式 |
+|----------|------|------------|
+| **日常对话** | "今天天气真好"、"心情不好"、"你好"、"辛苦了" | AI像朋友一样温暖回应，不触发系统功能 |
+| **复合问题** | "高一1班怎么样？高三2班呢？"、"分析张三和李四的成绩" | AI一次性回答所有问题，不遗漏任何一个 |
+| **比较分析** | "张三和李四谁成绩好"、"对比高一1班和高一2班" | AI直接基于系统数据分析比较 |
+| **模糊表达** | "帮我分析分析"、"最近怎么样"、"我们班" | AI主动引导，推算出最可能的意图 |
+| **精确指令** | "显示所有学生"、"总分排名"、"分析高一1班" | AI识别并触发对应系统功能 |
 
 支持模糊匹配、拼音识别和自然语言理解，例如：
 
@@ -114,8 +124,8 @@
 │              AI 引擎 + 指令解析系统                 │
 │  ┌──────────────┐  ┌──────────────────────┐     │
 │  │ AIChatEngine  │  │    DeepSeekAI        │     │
-│  │ (模糊匹配+    │  │  (API调用封装)        │     │
-│  │  意图识别)    │  │                      │     │
+│  │ (统一System   │  │  (DeepSeek V4 Flash  │     │
+│  │  Prompt路径)  │  │   API调用封装)        │     │
 │  └──────┬───────┘  └────────┬─────────────┘     │
 │         └───────────────────┘                    │
 │  ┌──────────────────────────────────────────┐   │
@@ -147,8 +157,8 @@
 | `Database` | SQLite数据库操作、排名更新、txt导入 |
 | `StudentIDValidator` | 8位学号严格校验器 |
 | `GradeEvaluator` | 成绩评估引擎（学生/班级/年级三级评估） |
-| `AIChatEngine` | 对话引擎（模糊匹配 + 意图识别 + AI回退） |
-| `DeepSeekAI` | DeepSeek API调用封装 |
+| `AIChatEngine` | 对话引擎（统一System Prompt + DeepSeek V4 Flash） |
+| `DeepSeekAI` | DeepSeek API调用封装（支持V4 Flash模型） |
 | `AIWorker` | 后台线程处理AI请求 |
 
 ---
@@ -166,14 +176,21 @@
 pip install PyQt5 openpyxl requests
 ```
 
-### 3️⃣ 配置DeepSeek API（可选）
+### 3️⃣ 配置DeepSeek API
 
-如需使用AI智能分析功能，在 `main.py` 顶部配置API密钥：
+如需使用AI智能分析功能，`config.json` 中已预置API密钥（或替换为你自己的密钥）：
 
-```python
-DEEPSEEK_API_KEY = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"   # 替换为你的API密钥
+```json
+{
+    "deepseek": {
+        "api_key": "sk-032f75440f6542d690f9ccc523b01cd3",
+        "api_url": "https://api.deepseek.com/v1/chat/completions",
+        "model": "deepseek-v4-flash"
+    }
+}
 ```
 
+> 💡 当前使用 **DeepSeek V4 Flash** 模型，快速且智能。
 > 💡 不配置API密钥时，系统仍可使用所有基础功能，AI回复将使用本地回退逻辑。
 
 ### 4️⃣ 准备学生数据（可选）
@@ -217,7 +234,16 @@ build.bat
 
 ```bash
 pip install pyinstaller
-pyinstaller build.spec
+pyinstaller --onefile --windowed --name "智析云途" ^
+    --add-data "config.json;." ^
+    --add-data "students_data.txt;." ^
+    --hidden-import "requests" ^
+    --hidden-import "openpyxl" ^
+    --hidden-import "PyQt5" ^
+    --hidden-import "PyQt5.QtWidgets" ^
+    --hidden-import "PyQt5.QtCore" ^
+    --hidden-import "PyQt5.QtGui" ^
+    --clean --noconfirm main.py
 ```
 
 ### 打包参数说明
@@ -266,8 +292,11 @@ dist/
 | `导出Excel` / `daochu` | 导出Excel成绩表 |
 | `查看表格` / `biaoge` | 打开可编辑数据表格 |
 | `系统统计` / `tongji` | 数据概览 |
-| `你好` / `hi` | 问候 |
-| `加油` / `辛苦了` / `晚安` | 情感互动 |
+| `你好` / `hi` | 问候（AI像朋友一样回应） |
+| `加油` / `辛苦了` / `晚安` | 情感互动（AI温暖回应） |
+| `今天天气真好` / `心情不好` | 日常闲聊（AI自然对话） |
+| `高一1班怎么样？高三2班呢？` | 复合问题（AI一次性回答） |
+| `对比高一1班和高一2班` | 比较分析（AI直接对比数据） |
 
 ### 🖱️ 快捷按钮
 
@@ -306,11 +335,15 @@ dist/
 ### 项目结构
 
 ```
-├── main.py                   # 主程序（全部代码 ~120KB）
+├── main.py                   # 主程序（全部代码 ~1800行）
+├── config.json               # 配置文件（API密钥、模型名等）
 ├── school_final.db           # SQLite数据库文件（自动生成）
 ├── students_data.txt         # 初始数据文件（启动时自动导入）
 ├── generate_data.py          # 测试数据生成工具
-└── README.md                 # 项目文档（本文件）
+├── build.bat                 # Windows一键打包脚本
+├── README.md                 # 项目文档（本文件）
+└── docs/
+    └── 项目分析报告.md        # 完整代码分析报告
 ```
 
 ### 数据表结构
@@ -362,7 +395,7 @@ CREATE TABLE students (
 | **Python 3.8+** | 编程语言 |
 | **PyQt5** | 图形用户界面 |
 | **SQLite3** | 嵌入式数据库 |
-| **DeepSeek API** | AI大语言模型（智能分析/问答） |
+| **DeepSeek V4 Flash API** | AI大语言模型（智能对话/分析/问答） |
 | **openpyxl** | Excel文件导出 |
 | **requests** | HTTP请求（AI API调用） |
 
@@ -392,7 +425,7 @@ pip install -r requirements.txt
 
 ## 🙏 致谢
 
-- [DeepSeek](https://deepseek.com/) — 提供强大的AI大模型API
+- [DeepSeek V4 Flash](https://deepseek.com/) — 提供强大的AI大模型API
 - [PyQt5](https://www.riverbankcomputing.com/software/pyqt/) — 优秀的Python GUI框架
 - 所有为本项目提供建议和反馈的用户
 

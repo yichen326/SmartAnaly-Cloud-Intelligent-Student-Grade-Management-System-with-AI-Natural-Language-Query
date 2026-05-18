@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-智析云途 - AI智能学生成绩管理系统 (完全重写版 v2.1)
+智析云途 - AI智能学生成绩管理系统 (完全重写版 v2.2)
 ======================================================
 基于 PyQt5 + DeepSeek API + SQLite3
 学号标准: 8位 GGCCNNNN (2位年级+2位班级+4位顺序号)
@@ -75,9 +75,9 @@ def _load_config() -> dict:
     import os as _os
     _defaults = {
         "deepseek": {
-            "api_key": "",
+            "api_key": "sk-032f75440f6542d690f9ccc523b01cd3",
             "api_url": "https://api.deepseek.com/v1/chat/completions",
-            "model": "deepseek-chat"
+            "model": "deepseek-v4-flash"
         },
         "files": {
             "data_file": "students_data.txt",
@@ -547,44 +547,168 @@ class DeepSeekAI:
             return None
 
     def get_system_prompt(self, db_context: str) -> str:
-        return f"""你是一个智能学生成绩管理系统的AI助手"智析云途"。
+        return f"""你是"智析云途" - 一个专业且友善的AI学生成绩管理助手。
 
-当前系统数据库包含以下数据：
+# 系统数据库当前状态
 {db_context}
 
-本系统核心功能是【学生成绩数据库管理】，包括学籍管理、成绩录入、班级/年级排名、成绩分析评估等。
+# 数据库表结构 (students)
+- student_id: 学号 (8位, 格式: GGCCNNNN, 如01010001)
+- name: 姓名
+- gender: 性别 (男/女)
+- grade_code: 年级代码 (01=高一, 02=高二, 03=高三)
+- class_code: 班级代码 (01-30)
+- chinese, math, english, physics, chemistry, biology: 各科成绩 (0-100)
+- total_score: 总分
+- class_rank: 班级排名, grade_rank: 年级排名
 
-你的回答规则：
-1. 【成绩/数据相关问题】- 基于系统数据给出专业、准确的分析，可适当展开（100-200字）
-2. 【非数据/日常生活问题】- 用1-2句话简短友好回复（严格控制在20-50字内），然后必须补充一句说明本系统主要提供学生成绩数据库管理服务
-3. 【语气风格】温暖、鼓励、专业
-4. 【字数限制】日常问题回复总字数不超过50字，其中系统功能说明必须包含"""
+# 功能代号列表（你不需要主动告知用户这些代号，只需自然对话即可）
+- show_all: 显示所有学生清单
+- rank_total: 全校总分排名
+- rank_class: 班级排名 (需指定年级和班级)
+- rank_grade: 年级排名
+- rank_subject: 单科排名
+- evaluate_class: 分析班级成绩
+- evaluate_grade: 分析年级成绩
+- evaluate_student: 评估某个学生的学习情况
+- query_student: 查询学生信息
+- stats: 系统数据概览统计
+- add: 添加学生 (需要学号、姓名、性别、6科成绩)
+- delete: 删除学生
+- update: 修改学生成绩
+- export_excel: 导出Excel
+- table: 打开表格编辑视图
+
+# 🔴 核心原则：如何判断用[FUNC]还是直接回答
+
+## 以下情况用[FUNC]触发系统功能
+- 用户要求查看完整列表/详细数据  → 触发对应的功能
+- 用户要求对单一对象做深入分析  → 触发对应的功能
+- 系统有现成功能可以获取精确数据时
+
+## 以下情况**不要用[FUNC]**，直接自然语言回答
+- 🟢 **比较类**：对比两个班、两个学生、两科成绩 → 直接用已有数据分析回答，不要触发FUNC
+- 🟢 **复合类**：同时问多个问题（"分析A班和B班"、"看看张三和李四"）→ 用自然语言一次性回答所有内容
+- 🟢 **日常闲聊**：天气、心情、问候、闲聊 → 像朋友一样自然回应，不用FUNC
+- 🟢 **推理分析**："谁进步最大"、"哪些同学需要补习"、"我们班优等生多不多" → AI发挥分析能力
+- 🟢 **学习建议**：问学习方法、备考建议、提分策略 → 提供专业建议，不用FUNC
+- 🟢 **模糊表达**："最近怎么样"、"帮我分析分析" → 先友好回应，主动引导
+- 🟢 **非成绩话题**：问系统功能、闲聊、感谢等 → 自然回应
+
+## [FUNC] 使用格式
+当你决定需要触发系统功能时，在回复中插入:
+[FUNC]功能代号|参数1|参数2
+后面紧跟你的自然语言说明和补充分析。
+
+# 🎯 针对不同输入类型的回答策略
+
+## 日常闲聊（天气/心情/问候/生活话题）
+- 像朋友一样自然、温暖地回应
+- 简短回复即可，不要太长
+- 最后可以自然过渡到学习话题，但不要生硬
+- 示例: 
+  - 用户:"今天天气真好" → "是啊，阳光明媚的日子最适合学习了！需要我帮你看看最近的成绩情况吗？😊"
+  - 用户:"心情不好" → "别太难过啦，每个人都会有低落的时候~要不要我帮你查查最近的成绩让你开心一下？说不定有惊喜哦！"
+  - 用户:"你好" → "你好呀！我是智析云途AI助手，有什么可以帮你的吗？想查成绩还是了解学习情况？"
+
+## 单个明确的成绩查询/分析请求
+- 判断：系统有对应的[FUNC]吗？
+- 有 → 触发[FUNC]，并附带你的分析说明
+- 没有（如"哪些同学不及格"）→ 直接AI分析回答
+- 示例:
+  - 用户:"分析高一1班" → [FUNC]evaluate_class|01|01 好的，我来为你分析高一1班的整体情况...
+  - 用户:"张三的学习情况怎么样" → [FUNC]evaluate_student|张三 我来查看张三的详细数据...
+
+## 复合问题（同一句话包含多个问题）
+- 关键原则：把问题拆解，一次性全部回答
+- 如果有多个[FUNC]必需的请求→只触发第一个，其余用AI数据直接回答
+- 如果有比较/对比 → 不要触发FUNC，直接AI回答
+- 示例:
+  - 用户:"高一1班成绩怎么样？高三2班呢？" → [FUNC]evaluate_class|01|01 先看高一1班的数据，至于高三2班，根据系统数据他们的均分是xxx，情况是这样的...
+  - 用户:"张三和李四谁成绩好" → "根据数据，张三总分xxx分，李四xxx分，...（直接分析，不用FUNC）"
+
+## 模糊/不完整的查询
+- 推算出最可能的意图
+- 如果缺少年级班级信息，用你已有的数据上下文来回答
+- 如果实在无法确定，友好地请用户补充
+- 示例:
+  - 用户:"我们班" → 根据数据有多个班级，问用户："请问你是哪个年级哪个班的呢？"
+  - 用户:"帮我看看" → "好的，你想查看什么内容呢？可以看学生信息、班级成绩、排名等~"
+
+# 回答风格要求
+- 语气温暖、鼓励、专业，像一位有经验的班主任或学习顾问
+- 用自然的中文交流，不要生硬机械
+- 日常闲聊简短自然；功能回答详细有信息量
+- 适当使用emoji让回复更生动（😊📊🎓💪等）
+- 给出的分析和建议要具体有用"""
 
     def build_context(self, db: Database) -> str:
+        """构建详细的数据库上下文，让AI能基于真实数据回答复杂问题，包括每位学生的个人成绩"""
         try:
             total = db.fetchone("SELECT COUNT(*) as cnt FROM students")
             count = total["cnt"] if total else 0
             if count == 0:
                 return "（系统中暂无学生数据）"
 
+            lines = []
+            lines.append(f"本校共有 {count} 名学生，分布在以下年级和班级：")
+            
+            # 每个班级的详细信息
             grade_classes = db.fetchall(
-                "SELECT grade_code, class_code, COUNT(*) as cnt FROM students GROUP BY grade_code, class_code"
+                "SELECT grade_code, class_code, COUNT(*) as cnt FROM students GROUP BY grade_code, class_code ORDER BY grade_code, class_code"
             )
-            lines = [f"共有 {count} 名学生"]
-            grade_summary = {}
             for gc in grade_classes:
                 gn = GRADE_NAMES.get(gc["grade_code"], gc["grade_code"])
-                key = f"{gn}({gc['grade_code']})"
-                if key not in grade_summary:
-                    grade_summary[key] = {"total": 0, "classes": set()}
-                grade_summary[key]["total"] += gc["cnt"]
-                grade_summary[key]["classes"].add(gc["class_code"])
-            for gn, info in grade_summary.items():
-                lines.append(f"- {gn}: {info['total']}人, {len(info['classes'])}个班级")
+                gc_stats = db.fetchone(
+                    "SELECT AVG(total_score) as avg_s, MIN(total_score) as min_s, MAX(total_score) as max_s FROM students WHERE grade_code=? AND class_code=?",
+                    (gc["grade_code"], gc["class_code"])
+                )
+                avg_str = f"均分{gc_stats['avg_s']:.1f}" if gc_stats and gc_stats["avg_s"] else "暂无数据"
+                lines.append(f"  {gn}{gc['class_code']}班：{gc['cnt']}人，{avg_str}")
 
+            # 整体统计
             stats = db.fetchone("SELECT AVG(total_score) as avg_s, MIN(total_score) as min_s, MAX(total_score) as max_s FROM students")
             if stats and stats["avg_s"]:
-                lines.append(f"总分范围: {stats['min_s']:.0f} - {stats['max_s']:.0f}, 平均分: {stats['avg_s']:.1f}")
+                lines.append(f"全校总分范围: {stats['min_s']:.0f} - {stats['max_s']:.0f}，平均分: {stats['avg_s']:.1f}")
+
+            # 各科平均分
+            subject_stats = []
+            for idx, subj in enumerate(SUBJECTS):
+                field = SUBJECT_FIELDS[idx]
+                s = db.fetchone(f"SELECT AVG({field}) as avg_s, MIN({field}) as min_s, MAX({field}) as max_s FROM students")
+                if s and s["avg_s"]:
+                    subject_stats.append(f"{subj}: 均分{s['avg_s']:.1f}，范围{s['min_s']:.0f}-{s['max_s']:.0f}")
+            if subject_stats:
+                lines.append("各科成绩概况：")
+                for ss in subject_stats:
+                    lines.append(f"  {ss}")
+
+            # 年级TOP学生
+            for gcode in ["01", "02", "03"]:
+                if any(gc["grade_code"] == gcode for gc in grade_classes):
+                    tops = db.fetchall(
+                        "SELECT name, class_code, total_score FROM students WHERE grade_code=? ORDER BY total_score DESC LIMIT 3",
+                        (gcode,)
+                    )
+                    if tops:
+                        gn = GRADE_NAMES.get(gcode, gcode)
+                        top_names = "、".join([f"{t['name']}({t['total_score']:.0f}分)" for t in tops])
+                        lines.append(f"{gn}前三名：{top_names}")
+
+            # ====== 新增：每位学生的个人详细成绩（用于学生对比、查找等）======
+            all_students = db.fetchall(
+                "SELECT student_id, name, gender, grade_code, class_code, chinese, math, english, physics, chemistry, biology, total_score, class_rank, grade_rank FROM students ORDER BY grade_code, class_code, student_id"
+            )
+            if all_students:
+                lines.append("\n【每位学生详细成绩】姓名(班级)：各科分数（总分，班级排名/年级排名）")
+                for stu in all_students:
+                    gn = GRADE_NAMES.get(stu["grade_code"], stu["grade_code"])
+                    lines.append(
+                        f"  {stu['name']}({gn}{stu['class_code']}班)：语文{stu['chinese']:.0f}，数学{stu['math']:.0f}，英语{stu['english']:.0f}，"
+                        f"物理{stu['physics']:.0f}，化学{stu['chemistry']:.0f}，生物{stu['biology']:.0f}，"
+                        f"总分{stu['total_score']:.0f}，班排#{stu['class_rank']}，年排#{stu['grade_rank']}"
+                    )
+
             return "\n".join(lines)
         except Exception as e:
             return f"（获取数据上下文时出错: {e}）"
@@ -745,249 +869,295 @@ class AIChatEngine:
         result = result.replace('~', '')
         return result
 
-    def process_query(self, user_input: str) -> Tuple[str, Optional[str], Any]:
-        user_input = user_input.strip()
-        if not user_input:
-            return "请输入你想查询或操作的内容~", None, None
+    def try_direct_match(self, user_input: str) -> Tuple[Optional[str], Optional[str], Any]:
+        """
+        尝试直接匹配无需AI的命令。
+        返回: (response_text, func_code, params) 或 (None, None, None) 表示无匹配
+        """
+        user_raw = user_input.strip()
+        if not user_raw:
+            return None, None, None
 
-        user_input = self._preprocess_pinyin(user_input)
-
-        # 1. 问候
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["greeting"]):
-            return random.choice(self.greetings), None, None
-
-        # 2. 菜单
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["menu"]):
+        # 菜单
+        if user_raw in ["菜单", "功能", "帮助", "help", "menu", "caidan", "cd"]:
             return self._generate_menu(), "menu", None
 
-        # 3. 退出
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["exit"]):
+        # 退出
+        if user_raw in ["退出", "exit", "quit", "再见", "拜拜", "bye", "tuichu"]:
             return "感谢使用智析云途！再见，祝你学习进步！", "exit", None
 
-        # 4. 感谢
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["thanks"]):
-            return random.choice([
-                "不客气！很高兴能帮到你",
-                "应该的！希望我的分析对你有帮助~",
-                "随时为你服务！有需要尽管找我哦"
-            ]), None, None
-
-        # 5. 日常生活问题检测
-        daily_patterns = [
-            "天气", "温度", "下雨", "下雪", "晴天", "阴天",
-            "笑话", "故事", "段子",
-            "电影", "电视剧", "娱乐", "明星",
-            "体育", "比赛", "足球", "篮球",
-            "音乐", "歌曲",
-            "新闻", "八卦", "热点",
-            "吃饭", "美食", "好吃",
-            "旅游", "景点", "好玩",
-            "游戏", "打游戏", "王者", "吃鸡",
-            "恋爱", "对象", "女朋友", "男朋友",
-            "工作", "公司", "上班",
-            "股票", "基金", "理财",
-            "时间", "日期", "星期几",
-            "年龄", "生日", "星座",
-            "颜色", "喜欢什么",
-            "演唱", "歌星", "演员",
-            "好看", "好玩", "有趣",
-            "中午吃", "晚上吃", "早餐",
-            "你好吗", "在吗", "干嘛呢",
-            "今天周", "现在几",
-            "推荐", "介绍",
-        ]
-        if any(p in user_input for p in daily_patterns):
-            return self._local_daily_response()
-
-        # 6. 情感/鼓励
-        chat_map = {
-            "加油": "加油！学习是持续进步的过程，每一天的努力都会开花结果！",
-            "努力": "天道酬勤，坚持就是胜利！",
-            "奋斗": "奋斗的青春最美丽！有什么问题随时问我~",
-            "迷茫": "每个人都会迷茫，不妨从小目标开始一步步来！",
-            "难过": "抱抱你~ 调整好心态重新出发！",
-            "开心": "开心就好！好心情学习效率更高哦~",
-            "哈哈": "哈哈，学习也可以很有趣的！",
-            "不错": "谢谢夸奖！我会继续努力提供更好的服务！",
-            "厉害": "过奖啦！主要是数据本身就很棒~",
-            "棒": "你最棒！",
-            "心情": "心情影响学习效率，记得保持积极心态！",
-            "辛苦了": "不辛苦！能帮到你我就很开心~",
-            "学习": "学习使人进步！有什么科目需要帮助吗？",
-            "建议": "学习建议：制定计划、定期复习、多做练习、不懂就问！",
-            "你好棒": "谢谢你！你也很棒！一起加油！",
-            "晚安": "晚安！好好休息，明天又是充满希望的一天！",
-            "早上好": "早上好！新的一天，新的收获，加油！",
-        }
-        for keyword, response in chat_map.items():
-            if keyword in user_input:
-                return response, None, None
-
-        # 导出Excel
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["export_excel"]):
-            return "正在导出Excel文件...", "export_excel", None
-
-        # 查看表格
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["table"]):
-            return "正在打开数据表格...", "table", None
-
-        # 显示全部学生
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["show_all"]):
-            return "正在查询所有学生...", "show_all", None
-
-        # 统计
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["stats"]):
-            return "正在生成系统数据概览...", "stats", None
-
-        # 总分排名
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["rank_total"]):
-            return "正在查询全校总分排名...", "rank_total", None
-
-        # 单科排名
-        for subj in SUBJECTS:
-            if f"{subj}排名" in user_input or f"{subj}排行" in user_input:
-                gy, cn = self.extract_class_info(user_input)
-                if gy and cn:
-                    return f"正在查询{GRADE_NAMES.get(gy, gy)}{cn}班{subj}排名...", "rank_subject_class", (gy, cn, subj)
-                return f"正在查询全校{subj}排名...", "rank_subject", subj
-
-        # 班级排名
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["rank_class"]):
-            gy, cn = self.extract_class_info(user_input)
-            if gy and cn:
-                return f"正在查询{GRADE_NAMES.get(gy, gy)}{cn}班排名...", "rank_class", (gy, cn)
-            return "请指定班级，例如: 高一1班排名", "rank_class", None
-
-        # 年级排名
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["rank_grade"]):
-            gy = self.extract_grade_info(user_input)
-            if gy:
-                return f"正在查询{GRADE_NAMES.get(gy, gy)}排名...", "rank_grade", gy
-            return "请指定年级，例如: 高一年级排名", "rank_grade", None
-
-        # 班级分析
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["evaluate_class"]):
-            gy, cn = self.extract_class_info(user_input)
-            if gy and cn:
-                return f"正在分析{GRADE_NAMES.get(gy, gy)}{cn}班成绩...", "evaluate_class", (gy, cn)
-            return "请指定要分析的班级，例如: 分析高一1班成绩", "evaluate_class", None
-
-        # 年级分析
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["evaluate_grade"]):
-            gy = self.extract_grade_info(user_input)
-            if gy:
-                return f"正在分析{GRADE_NAMES.get(gy, gy)}成绩...", "evaluate_grade", gy
-            return "请指定要分析的年级，例如: 分析高一年级成绩", "evaluate_grade", None
-
         # 添加学生
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["add"]):
-            return ("好的！添加新同学~ 请使用格式:\n"
+        if self._is_exact_add_command(user_raw):
+            return ("添加学生请使用格式:\n"
                    "添加学生 学号 姓名 性别 语文 数学 英语 物理 化学 生物\n"
                    "学号标准: 8位(GGCCNNNN) 如: 01010006\n"
                    "例如: 添加学生 01010099 王小明 男 75 82 90 68 85 79"), "add", None
 
-        # 删除学生
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["delete"]):
-            _, value = self.extract_student_info(user_input)
-            if value:
-                return f"确定要删除「{value}」？(需要确认)", "delete_confirm", value
-            return "请提供要删除学生的学号或姓名", "delete", None
+        return None, None, None
 
-        # 修改成绩
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["update"]):
-            m = re.search(r'修改\s*([\u4e00-\u9fa5]+)\s*(语文|数学|英语|物理|化学|生物)\s*(\d{1,3}(?:\.\d)?)', user_input)
-            if m:
-                name = m.group(1)
-                subject = m.group(2)
-                score = float(m.group(3))
-                return f"正在修改{name}的{subject}成绩为{score}分...", "update_single", (name, subject, score)
-            return ("请提供要修改的信息，例如:\n"
-                   "修改 张三 数学 95\n"
-                   "或: 修改成绩 01010001 85 90 88 76 92 81"), "update", None
+    def process_query(self, user_input: str) -> Tuple[str, Optional[str], Any]:
+        """智能处理用户输入：唯一路由，所有自然语言都交给DeepSeek AI判断"""
+        user_raw = user_input.strip()
+        if not user_raw:
+            return "请输入你想查询或操作的内容~", None, None
 
-        # 评估学生
-        if self.fuzzy_match(user_input, self.FUNCTION_KEYWORDS["evaluate_student"]):
-            _, value = self.extract_student_info(user_input)
-            if value:
-                return f"正在评估学生「{value}」的学习表现...", "evaluate_student", ("name" if re.match(r'^[\u4e00-\u9fa5]+$', value) and len(value) <= 4 else "student_id", value)
-            return "请提供要评估的学生的学号或姓名", "evaluate_student", None
+        # 拼音预处理（仅用于辅助AI理解，保留原始输入供AI参考）
+        user_preprocessed = self._preprocess_pinyin(user_raw)
 
-        # 智能检测班级/年级
-        gy, cn = self.extract_class_info(user_input)
-        if gy and cn:
-            return f"正在分析{GRADE_NAMES.get(gy, gy)}{cn}班...", "evaluate_class", (gy, cn)
+        # ========== 先尝试直接匹配（无需AI） ==========
+        direct_result = self.try_direct_match(user_raw)
+        if direct_result and direct_result[1] is not None:
+            return direct_result
 
-        gy = self.extract_grade_info(user_input)
-        if gy:
-            return f"正在分析{GRADE_NAMES.get(gy, gy)}整体情况...", "evaluate_grade", gy
+        # ========== 所有其他输入 → 走AI意图解析 ==========
+        result = self._parse_intent_with_ai(user_raw, user_preprocessed)
+        if result and result[0]:
+            return result
 
-        # 包含学生姓名，尝试查询
-        _, value = self.extract_student_info(user_input)
-        if value and len(user_input) < 30:
-            return f"正在查询学生「{value}」的信息...", "query_student", ("name" if re.match(r'^[\u4e00-\u9fa5]+$', value) and len(value) <= 4 else "student_id", value)
+        # ========== AI不可用时的兜底 ==========
+        if not self.deepseek.available:
+            return ("【AI服务未连接】\n"
+                   "系统仅支持以下精确指令:\n"
+                   "  「菜单」- 查看功能列表\n"
+                   "  「添加学生 学号 姓名 性别 成绩...」- 添加学生\n"
+                   "  「退出」- 退出系统\n"
+                   "请检查API密钥配置后重试。"), None, None
 
-        # 默认: 调用 DeepSeek API
-        return self._generate_ai_response(user_input)
+        # ========== AI调用失败时的兜底 ==========
+        return ("抱歉，AI暂时无法响应你的请求，请稍后重试。\n"
+               "你也可以尝试更明确的表达，如「分析高一一班成绩」。"), None, None
 
-    def _generate_ai_response(self, user_input: str) -> Tuple[str, Optional[str], Any]:
+    def _is_exact_add_command(self, text: str) -> bool:
+        """精确判断是否是添加学生指令"""
+        text = text.strip()
+        if text.startswith("添加学生") or text.startswith("添加 "):
+            # 确保后面有学号和姓名
+            parts = text.split()
+            # 添加学生 + 学号 + 姓名 + 性别 + 成绩... = 至少6个部分
+            if len(parts) >= 3:
+                return True
+        return False
+
+    def _parse_intent_with_ai(self, user_raw: str, user_preprocessed: str) -> Optional[Tuple[str, Optional[str], Any]]:
+        """使用DeepSeek API解析用户意图
+        返回: (AI完整回复文本, 功能代号/None, 参数/None)
+        - 功能代号为 "ai_response" 表示纯AI回复，无需执行系统功能
+        - 功能代号为非None值时，system会执行该功能并将数据传回AI
+        """
         db_context = self.deepseek.build_context(self.db)
-        system_prompt = self.deepseek.get_system_prompt(db_context)
+
+        system_prompt = f"""你是"智析云途"——一个专业、温暖、聪明的AI学生成绩管理助手。你掌握所有学生数据，可以自然回答各种问题。
+
+## 📊 当前系统数据
+{db_context}
+
+## 🎯 你的核心能力
+1. **日常对话**：像朋友一样自然回应问候、天气、心情等闲聊话题
+2. **成绩查询**：利用数据直接回答各种成绩相关问题
+3. **数据分析**：比较班级、学生、科目，分析趋势，提出建议
+4. **复合问题**：一句话问多个问题 → 一次性全部回答
+5. **模糊识别**：从模糊表达推断用户真实意图
+
+## 🔴 何时使用 [FUNC]
+
+仅当用户请求**查看/执行**某个系统功能时，才触发对应[FUNC]：
+
+| 用户说... | 触发 |
+|---|---|
+| "显示所有学生"、"全部同学" | [FUNC]show_all |
+| "全校排名"、"总分排名" | [FUNC]rank_total |
+| "分析X班"、"X班怎么样" | [FUNC]evaluate_class|年级代码|班级代码 |
+| "评估/分析某学生"、"张三怎么样" | [FUNC]evaluate_student|学生姓名 |
+| "查询/查找学生 XXX" | [FUNC]query_student|学号或姓名 |
+| "班级排名"、"班排名" | [FUNC]rank_class|年级代码|班级代码 |
+| "年级排名" | [FUNC]rank_grade|年级代码 |
+| "单科排名"、"X科排名" | [FUNC]rank_subject|科目名 |
+| "系统统计"、"概览" | [FUNC]stats |
+| "导出Excel" | [FUNC]export_excel |
+| "表格视图" | [FUNC]table |
+
+**🚫 以下情况绝不使用[FUNC]，直接用你的知识和数据回答：**
+- 🟢 **比较类**："对比高一1班和高一2班"、"张三和李四谁更好"、"哪科平均分最高"
+- 🟢 **复合类**："高一1班怎么样？高三2班呢？"、"分析张三和李四的成绩"（一句话带多个问题）
+- 🟢 **推理类**："谁总分最高"、"哪些同学需要补习"、"我们班优等生多不多"
+- 🟢 **闲聊类**：天气、心情、问候、感谢、生活话题
+- 🟢 **建议类**：学习方法、备考建议、提分策略
+- 🟢 **模糊类**："帮我分析分析"、"最近怎么样"、"我们班"
+
+## 💬 不同场景的回答示例
+
+**日常闲聊：**
+- 用户："今天天气真好" → "是啊，阳光明媚最适合学习了！需要我帮你看看最近的成绩情况吗？😊"
+- 用户："心情不好" → "别太难过啦~要不要看看你的成绩有没有进步？说不定会开心起来哦！💪"
+- 用户："你好" → "你好呀！我是智析云途AI助手，有什么可以帮你的吗？😊"
+
+**比较类（不用FUNC）：**
+- 用户："对比高一1班和高一2班" → "根据系统数据，高一1班均分XX分，高一2班均分XX分，相差XX分。1班的优势科目是...2班的优势科目是..."
+- 用户："张三和李四谁成绩好" → "张三总分XX分（班排#X），李四总分XX分（班排#X），张三更胜一筹！但李四的数学比张三好..."
+
+**复合类（不用FUNC，一次性回答）：**
+- 用户："高一1班怎么样？高三2班呢？" → "先看高一1班...再看高三2班...两班对比来看..."
+- 用户："分析张三和李四的成绩" → "张三的详细情况...李四的详细情况...两人的对比..."
+
+**单一查询（用FUNC）：**
+- 用户："分析高一1班成绩" → [FUNC]evaluate_class|01|01 好的，我来分析高一1班的详细数据...
+- 用户："看看张三的情况" → [FUNC]evaluate_student|张三 我来查看张三的详细信息...
+
+## 📝 回答风格要求
+- 日常闲聊：温暖简短，像朋友一样，适当使用😊🎉💪📊等emoji
+- 成绩分析：详细有数据支撑，专业又不失温度
+- 回答问题要具体，不要只说"有数据"而要说出实际数据
+- 复合问题必须覆盖用户问的所有点，不要遗漏
+
+## ⚙️ 技术参数
+- 年级代码：01=高一, 02=高二, 03=高三
+- 班级代码：01-30
+- 科目：语文、数学、英语、物理、化学、生物
+
+请直接输出你的回答。如果需要触发系统功能，在回答中插入 [FUNC]功能代号|参数 即可，[FUNC]不会显示给用户。"""
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input}
+            {"role": "user", "content": f"用户输入: {user_raw}"}
         ]
 
-        if self.deepseek.available:
-            try:
-                response = self.deepseek.chat(messages, temperature=0.8, max_tokens=800)
-                if response:
-                    return f"[AI] {response}", "ai_response", None
-            except Exception as e:
-                print(f"[AI] API调用失败: {e}")
+        if not self.deepseek.available:
+            return None
 
-        return self._local_fallback_response(user_input)
+        try:
+            response = self.deepseek.chat(messages, temperature=0.7, max_tokens=1200)
+            if not response:
+                return None
 
-    def _local_daily_response(self) -> Tuple[str, Optional[str], Any]:
-        """日常生活问题 - 简短回复 + 系统功能说明"""
-        count = self.db.fetchone("SELECT COUNT(*) as cnt FROM students")
-        total = count["cnt"] if count else 0
+            # 检查是否包含功能调用
+            if "[FUNC]" in response:
+                func_match = re.search(r'\[FUNC\](\w+)(?:\|([^]]*))?', response)
+                if func_match:
+                    func = func_match.group(1)
+                    params_str = func_match.group(2)
+                    
+                    # 清理文本，去掉[FUNC]部分，保留AI的自然语言
+                    clean_text = re.sub(r'\s*\[FUNC\]\w+(\|[^\]]*)?', '', response).strip()
+                    
+                    params_list = params_str.split("|") if params_str else []
+                    func_params = self._map_func_params(func, params_list)
+                    if func_params is not None:
+                        # 返回: (AI纯净回复文本, 功能代号, 参数)
+                        return clean_text, func, func_params
+                    else:
+                        # 参数不足，退化为纯AI回复
+                        return response.strip(), "ai_response", None
+                else:
+                    return response.strip(), "ai_response", None
+            else:
+                # 纯AI回复（日常对话/比较/复合/分析等）
+                return response.strip(), "ai_response", None
 
-        daily_responses = [
-            f"哈哈，这个我不太擅长~ 我是智析云途学生成绩管理系统，主要负责成绩管理、学籍管理、排名分析等。查成绩、做评估找我准没错！",
-            f"这个问题超出我的范围啦~ 我是专业的学生成绩管理系统，专注于学籍管理、成绩录入、班级/年级排名分析哦！有什么成绩相关问题可以问我~",
-            f"这个嘛...我是学习成绩管理AI，主要做数据库管理、成绩分析的。系统里现有{total}位同学的数据，想看看哪个班的成绩？",
-            f"嘿嘿，日常聊天不是我的主业啦~ 我是智析云途学生成绩管理系统，帮你查成绩、做分析、排名评估都在行！",
-            f"这个我不太会~ 不过说到成绩、排名、分析这些我可在行！我是专业的学生成绩管理系统，有{total}位同学的数据等你来探索哦~",
-        ]
-        return random.choice(daily_responses), None, None
+        except Exception as e:
+            print(f"[AI意图解析] 错误: {e}")
+            return None
+
+    def _map_func_params(self, func: str, params_list: List[str]) -> Any:
+        """将AI返回的字符串参数映射为系统需要的参数格式"""
+        try:
+            if func == "evaluate_class":
+                if len(params_list) >= 2:
+                    grade_code = params_list[0].strip()
+                    class_code = params_list[1].strip().zfill(2)
+                    # 处理 "高一" → "01"
+                    for gname, gcode in GRADE_CODES.items():
+                        if gname in grade_code:
+                            grade_code = gcode
+                            break
+                    # 处理 "1班" → "01"
+                    class_code = re.sub(r'[班\s]', '', class_code).zfill(2)
+                    return (grade_code, class_code)
+                return None
+
+            elif func == "rank_class":
+                if len(params_list) >= 2:
+                    grade_code = params_list[0].strip()
+                    class_code = params_list[1].strip().zfill(2)
+                    for gname, gcode in GRADE_CODES.items():
+                        if gname in grade_code:
+                            grade_code = gcode
+                            break
+                    class_code = re.sub(r'[班\s]', '', class_code).zfill(2)
+                    return (grade_code, class_code)
+                return None
+
+            elif func in ("evaluate_grade", "rank_grade"):
+                if params_list:
+                    grade_code = params_list[0].strip()
+                    for gname, gcode in GRADE_CODES.items():
+                        if gname in grade_code:
+                            grade_code = gcode
+                            break
+                    return grade_code
+                return None
+
+            elif func == "evaluate_student":
+                if params_list:
+                    value = params_list[0].strip()
+                    if re.match(r'^\d{8}$', value):
+                        return ("student_id", value)
+                    else:
+                        return ("name", value)
+                return None
+
+            elif func == "query_student":
+                if params_list:
+                    value = params_list[0].strip()
+                    if re.match(r'^\d{8}$', value):
+                        return ("student_id", value)
+                    else:
+                        return ("name", value)
+                return None
+
+            elif func == "rank_subject":
+                if params_list:
+                    subject = params_list[0].strip()
+                    if subject in SUBJECTS:
+                        return subject
+                    # 尝试匹配科目名
+                    for subj in SUBJECTS:
+                        if subj in subject:
+                            return subj
+                    return None
+                return None
+
+            elif func in ("show_all", "stats", "export_excel", "table", "rank_total"):
+                return None
+
+            elif func == "delete":
+                if params_list:
+                    return params_list[0].strip()
+                return None
+
+            elif func == "update":
+                # 修改成绩的特殊解析
+                return None
+
+            else:
+                return None
+        except Exception as e:
+            print(f"[参数映射] 错误: {e}")
+            return None
+
+    # (以下方法已弃用，保留为空以避免引用错误)
+    def _generate_ai_response(self, user_input: str) -> Tuple[str, Optional[str], Any]:
+        """已弃用 - 所有AI响应由 _parse_intent_with_ai 处理"""
+        return "已过时的方法", None, None
 
     def _local_fallback_response(self, user_input: str) -> Tuple[str, Optional[str], Any]:
-        """本地回退处理 - 无法理解的问题"""
+        """本地回退处理 - 当AI完全不可用时"""
         count = self.db.fetchone("SELECT COUNT(*) as cnt FROM students")
         total = count["cnt"] if count else 0
-
-        fallbacks = [
-            f"嗯...我暂时不太理解你的问题呢。\n"
-            f"不过目前系统中有 {total} 位同学的记录，你可以试试以下操作：\n"
-            f"  说「菜单」查看所有功能\n"
-            f"  说「分析 某班」查看班级成绩\n"
-            f"  说「查询 学生姓名」查找学生\n"
-            " 本系统主要提供学生成绩数据库管理服务",
-
-            f"抱歉，我没有完全理解你的意思。\n"
-            f"目前系统管理着 {total} 位同学的数据，\n"
-            "你可以试试这样说：\n"
-            "  「高一1班成绩怎么样」\n"
-            "  「查询张三的成绩」\n"
-            "  「显示系统统计」\n"
-            " 我是学生成绩管理系统，以上功能都可以帮到你~",
-
-            f"让我看看... 系统中有 {total} 位同学。\n"
-            "要不你换个说法？或者直接说「菜单」看看我能做什么~\n"
-            " 本系统核心功能是学生成绩数据库管理哦！"
-        ]
-        return random.choice(fallbacks), None, None
+        return (
+            f"抱歉，AI暂时无法处理你的请求。\n"
+            f"系统目前管理着 {total} 位同学的数据。\n"
+            f"你可以说「菜单」查看可用的指令，或检查API配置后重试。"
+        ), None, None
 
 
 # ===================== PyQt5 图形界面 =====================
@@ -1136,6 +1306,7 @@ class MainWindow(QMainWindow):
         self.ai_engine = AIChatEngine(self.db)
         self._busy = False
         self._ai_workers = []
+        self._thinking_message_id = None  # 用于跟踪正在思考中的占位消息
 
         loaded, skipped, load_errors = self.db.load_from_txt()
         if loaded > 0:
@@ -1178,6 +1349,11 @@ class MainWindow(QMainWindow):
                 background: white;
             }
             QLineEdit:focus { border-color: #667eea; }
+            QLineEdit:disabled {
+                background: #f0f0f0;
+                border-color: #ccc;
+                color: #999;
+            }
             QPushButton {
                 padding: 8px 16px;
                 font-size: 13px;
@@ -1188,6 +1364,10 @@ class MainWindow(QMainWindow):
             }
             QPushButton:hover { background: #5a6fd6; }
             QPushButton:pressed { background: #4a5fc6; }
+            QPushButton:disabled {
+                background: #b0b0b0;
+                color: #e0e0e0;
+            }
             QTableWidget {
                 background: white;
                 border: 1px solid #ddd;
@@ -1245,8 +1425,6 @@ class MainWindow(QMainWindow):
                      "QPushButton:hover { background: rgba(255,255,255,0.3); }")
 
         buttons = [
-            ("显示全部", self.show_all),
-            ("总分排名", self.show_rank_total),
             ("班级排名", self.show_rank_class),
             ("年级排名", self.show_rank_grade),
             ("导出Excel", self.export_excel),
@@ -1273,6 +1451,19 @@ class MainWindow(QMainWindow):
         chat_layout.setSpacing(6)
         chat_layout.setContentsMargins(0, 0, 0, 0)
 
+        # 聊天区域标题 - 显示当前状态
+        chat_header = QHBoxLayout()
+        chat_title = QLabel("💬 AI智能对话")
+        chat_title.setFont(get_font(14, True))
+        chat_title.setStyleSheet("color: #333; padding: 2px 4px;")
+        chat_header.addWidget(chat_title)
+        chat_header.addStretch()
+        self.thinking_label = QLabel("")
+        self.thinking_label.setFont(get_font(13))
+        self.thinking_label.setStyleSheet("color: #e67e22; font-weight: bold; padding: 2px 8px;")
+        chat_header.addWidget(self.thinking_label)
+        chat_layout.addLayout(chat_header)
+
         self.chat_area = QTextEdit()
         self.chat_area.setReadOnly(True)
         self.chat_area.setMinimumHeight(180)
@@ -1286,16 +1477,17 @@ class MainWindow(QMainWindow):
         self.input_box.returnPressed.connect(self.send_message)
         input_layout.addWidget(self.input_box)
 
-        send_btn = QPushButton("发送")
-        send_btn.setFont(get_font(14, True))
-        send_btn.setStyleSheet("""
+        self.send_btn = QPushButton("发送")
+        self.send_btn.setFont(get_font(14, True))
+        self.send_btn.setStyleSheet("""
             QPushButton { padding: 10px 24px; font-size: 14px; border-radius: 20px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #667eea, stop:1 #764ba2);
                 color: white; font-weight: bold; min-height: 16px; }
             QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5a6fd6, stop:1 #6a41a2); }
+            QPushButton:disabled { background: #b0b0b0; color: #e0e0e0; }
         """)
-        send_btn.clicked.connect(self.send_message)
-        input_layout.addWidget(send_btn)
+        self.send_btn.clicked.connect(self.send_message)
+        input_layout.addWidget(self.send_btn)
         chat_layout.addLayout(input_layout)
 
         chat_widget.setLayout(chat_layout)
@@ -1724,9 +1916,19 @@ class MainWindow(QMainWindow):
         try:
             color = "#667eea" if sender == "user" else "#2ecc71" if sender == "system" else "#333"
             bg = "#f0f2ff" if sender == "user" else "#f0fff4" if sender == "system" else "white"
+            
+            # 如果是"thinking"类型，使用特殊样式
+            if sender == "thinking":
+                color = "#e67e22"
+                bg = "#fff8e6"
+                sender_display = "系统"
+            else:
+                sender_display = "你" if sender == "user" else "系统"
+            
             html = f'<div style="margin: 6px 0; padding: 12px; border-radius: 8px; background: {bg}; border-left: 4px solid {color};">'
-            if sender == "user":
-                html += f'<b style="color: {color}; font-size: 14px;">你: </b>'
+            if sender != "thinking":
+                if sender == "user":
+                    html += f'<b style="color: {color}; font-size: 14px;">{sender_display}: </b>'
             html += f'<span style="color: #333; font-size: 14px; white-space: pre-wrap;">{message}</span></div>'
             self.chat_area.append(html)
             scrollbar = self.chat_area.verticalScrollBar()
@@ -1734,68 +1936,199 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _set_input_enabled(self, enabled: bool):
+        """启用或禁用输入控件"""
+        self.input_box.setEnabled(enabled)
+        self.send_btn.setEnabled(enabled)
+        if enabled:
+            self.input_box.setPlaceholderText("输入指令或问题，按Enter发送...")
+            self.input_box.setFocus()
+            self.thinking_label.setText("")
+            self.status_bar.showMessage("就绪")
+        else:
+            self.input_box.setPlaceholderText("AI思考中，请稍候...")
+            self.thinking_label.setText("⏳ 思考中...")
+            self.status_bar.showMessage("AI正在处理，请稍候...")
+
     def send_message(self, text_override=None):
+        """发送消息 - 完全异步，不阻塞UI"""
         if self._busy:
             return
-        self._busy = True
 
+        # 获取用户输入
+        if text_override:
+            text = text_override
+        else:
+            text = self.input_box.text().strip()
+
+        if not text:
+            return
+
+        # 清空输入框，显示用户消息
+        self.input_box.clear()
+        self._append_message("user", text)
+
+        # ========== 第一步：尝试快速直接匹配（无需AI，在主线程执行） ==========
         try:
-            if text_override:
-                text = text_override
-            else:
-                text = self.input_box.text().strip()
-
-            if not text:
-                self._busy = False
-                return
-
-            self.input_box.clear()
-            self._append_message("user", text)
-            self.status_bar.showMessage("正在处理...")
-
-            try:
-                response, func, params = self.ai_engine.process_query(text)
-            except Exception as e:
-                self._append_message("system", f"AI分析出错: {e}")
-                self.status_bar.showMessage("就绪")
-                self._busy = False
-                return
-
-            if func == "exit":
-                self._append_message("system", response)
-                self._busy = False
-                QTimer.singleShot(1000, self.close)
-                return
-
-            result_text_to_output = response
-            try:
-                result_text = self._execute_function(func, params, text)
-                if result_text is not None:
-                    result_text_to_output = result_text
-            except Exception as e:
-                result_text_to_output = f"操作出错: {e}"
-
-            try:
-                self._append_message("system", result_text_to_output)
-            except Exception:
-                pass
-
-            try:
-                if func in ("evaluate_class", "evaluate_grade", "evaluate_student", "rank_total", "stats"):
-                    self._generate_ai_comment(func, params, text)
-            except Exception:
-                pass
-
-            self.status_bar.showMessage("就绪")
+            direct_response, direct_func, direct_params = self.ai_engine.try_direct_match(text)
         except Exception as e:
-            try:
-                self._append_message("system", f"系统错误: {e}")
-                self.status_bar.showMessage("就绪")
-            except:
-                pass
-            print(f"[send_message] Error: {traceback.format_exc()}")
-        finally:
-            QTimer.singleShot(100, lambda: setattr(self, '_busy', False))
+            self._append_message("system", f"处理出错: {e}")
+            return
+
+        if direct_response and direct_func is not None:
+            # 快速匹配成功，在主线程直接处理
+            self._handle_direct_result(direct_response, direct_func, direct_params, text)
+            return
+
+        # ========== 第二步：需要AI处理，异步执行 ==========
+        # 设置忙碌状态，禁用输入
+        self._busy = True
+        self._set_input_enabled(False)
+
+        # 显示思考中的提示
+        self._append_message("thinking", "⏳ AI正在思考中，请稍候...")
+
+        # 启动AI工作线程
+        worker = AIWorker(
+            self.ai_engine.deepseek,
+            self.ai_engine._build_ai_messages(text),
+            temperature=0.7
+        )
+        worker.finished.connect(lambda resp: self._on_ai_response(resp, text))
+        worker.error.connect(lambda err: self._on_ai_error(err, text))
+        worker.start()
+        self._ai_workers.append(worker)
+
+    def _build_ai_messages_for_worker(self, text: str) -> List[Dict]:
+        """构建AI消息（给工作线程用）"""
+        db_context = self.ai_engine.deepseek.build_context(self.db)
+        system_prompt = self.ai_engine.deepseek.get_system_prompt(db_context)
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"用户输入: {text}"}
+        ]
+
+    def _on_ai_response(self, ai_response: str, original_text: str):
+        """AI工作线程完成后的回调"""
+        # 清理工作线程
+        self._cleanup_workers()
+
+        # 解析AI响应
+        response_text, func, params = self._parse_ai_response(ai_response, original_text)
+
+        # 删除最后的"思考中"提示
+        self._remove_last_thinking_message()
+
+        # 处理结果
+        result_text_to_output = response_text
+        try:
+            result_data = self._execute_function(func, params, original_text)
+            if result_data is not None:
+                clean_text = response_text
+                clean_text = re.sub(r'^\[AI\]\s*', '', clean_text)
+                clean_text = re.sub(r'\s*\[FUNC\]\w+(\|[^\]]*)?', '', clean_text).strip()
+                
+                if func == "ai_response":
+                    result_text_to_output = f"🤖 [DeepSeek AI]\n{clean_text}"
+                elif func == "menu":
+                    result_text_to_output = f"📋 [系统菜单]\n{result_data}"
+                else:
+                    if clean_text:
+                        result_text_to_output = f"🤖 [DeepSeek AI] + 📋 [系统程序]\n{clean_text}\n\n📊 系统数据:\n{result_data}"
+                    else:
+                        result_text_to_output = f"📋 [系统程序]\n{result_data}"
+        except Exception as e:
+            result_text_to_output = f"操作出错: {e}"
+
+        self._append_message("system", result_text_to_output)
+
+        # 检查是否为退出功能
+        if func == "exit":
+            QTimer.singleShot(1000, self.close)
+            return
+
+        # 恢复输入
+        self._busy = False
+        self._set_input_enabled(True)
+
+    def _on_ai_error(self, error_msg: str, original_text: str):
+        """AI工作线程出错后的回调"""
+        self._cleanup_workers()
+        self._remove_last_thinking_message()
+
+        # 尝试本地兜底
+        try:
+            fallback_response, func, params = self.ai_engine._local_fallback_response(original_text)
+            self._append_message("system", fallback_response)
+        except:
+            self._append_message("system", f"抱歉，AI处理出错了: {error_msg}")
+
+        self._busy = False
+        self._set_input_enabled(True)
+
+    def _cleanup_workers(self):
+        """清理已完成的工作线程"""
+        self._ai_workers = [w for w in self._ai_workers if w.isRunning()]
+
+    def _remove_last_thinking_message(self):
+        """移除最后的思考提示消息"""
+        try:
+            cursor = self.chat_area.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
+            selected = cursor.selectedText()
+            if "⏳ AI正在思考中" in selected:
+                cursor.removeSelectedText()
+                cursor.deleteChar()  # 删除换行
+        except:
+            pass
+
+    def _parse_ai_response(self, ai_response: str, original_text: str) -> Tuple[str, Optional[str], Any]:
+        """解析AI响应，提取功能代号和参数"""
+        response = ai_response.strip()
+        if not response:
+            return self.ai_engine._local_fallback_response(original_text)
+
+        # 检查是否包含功能调用
+        if "[FUNC]" in response:
+            func_match = re.search(r'\[FUNC\](\w+)(?:\|([^]]*))?', response)
+            if func_match:
+                func = func_match.group(1)
+                params_str = func_match.group(2)
+                
+                # 清理文本，去掉[FUNC]部分
+                clean_text = re.sub(r'\s*\[FUNC\]\w+(\|[^\]]*)?', '', response).strip()
+                
+                params_list = params_str.split("|") if params_str else []
+                func_params = self.ai_engine._map_func_params(func, params_list)
+                if func_params is not None:
+                    return clean_text, func, func_params
+                else:
+                    return response.strip(), "ai_response", None
+            else:
+                return response.strip(), "ai_response", None
+        else:
+            return response.strip(), "ai_response", None
+
+    def _handle_direct_result(self, response: str, func: Optional[str], params: Any, original_text: str):
+        """处理快速直接匹配的结果（在主线程同步执行）"""
+        if func == "exit":
+            self._append_message("system", response)
+            QTimer.singleShot(1000, self.close)
+            return
+
+        result_text_to_output = response
+        try:
+            result_data = self._execute_function(func, params, original_text)
+            if result_data is not None:
+                if func == "menu":
+                    result_text_to_output = f"📋 [系统菜单]\n{result_data}"
+                else:
+                    result_text_to_output = f"📋 [系统程序]\n{result_data}"
+        except Exception as e:
+            result_text_to_output = f"操作出错: {e}"
+
+        self._append_message("system", result_text_to_output)
 
     def _execute_function(self, func: Optional[str], params: Any, original_text: str) -> Optional[str]:
         if func is None:
@@ -2049,8 +2382,6 @@ class MainWindow(QMainWindow):
 
         lines.append(f"\n最高分: {result['max_student']} - {result['max_score']:.0f}分")
         lines.append(f"最低分: {result['min_student']} - {result['min_score']:.0f}分")
-        lines.append("\n【AI点评】")
-        lines.append(self._generate_class_comment(result))
 
         return "\n".join(lines)
 
@@ -2066,10 +2397,7 @@ class MainWindow(QMainWindow):
             level = self.evaluator.get_grade_level(cls['class_avg'])
             lines.append(f"  {cls['grade']}: {cls['class_avg']}分 ({cls['student_count']}人) {level}")
 
-        lines.append("\n【AI点评】")
-        lines.append(self._generate_grade_comment(result))
         return "\n".join(lines)
-
     def _format_stats(self) -> str:
         total = self.db.fetchone("SELECT COUNT(*) as cnt FROM students")
         count = total["cnt"] if total else 0
@@ -2150,63 +2478,6 @@ class MainWindow(QMainWindow):
             "希望各班级齐头并进，共创佳绩！"
         ]))
         return "\n".join(parts)
-
-    def _generate_ai_comment(self, func: str, params: Any, original_text: str):
-        try:
-            if func == "evaluate_class" and params:
-                gy, cn = params
-                gn = GRADE_NAMES.get(gy, gy)
-                result = self.evaluator.evaluate_class(self.db, gy, cn)
-                if result:
-                    prompt = f"我已查看了{gn}{cn}班的成绩数据（均分{result['class_avg']}，{result['student_count']}人）。请给我一段简短温暖的点评（50字以内），鼓励这个班级。"
-            elif func == "evaluate_grade" and params:
-                gy = params
-                result = self.evaluator.evaluate_grade(self.db, gy)
-                if result:
-                    prompt = f"我已分析了{GRADE_NAMES.get(gy, gy)}的整体成绩（{result['total_students']}人，{result['class_count']}个班）。请给我一段简短温暖的鼓励（50字以内）。"
-            elif func == "evaluate_student" and params:
-                _, value = params
-                prompt = f"请给学生「{value}」一句简短的学习鼓励（20字以内）。"
-            elif func == "rank_total":
-                prompt = "请用一句话鼓励全校学生继续努力（20字以内）。"
-            elif func == "stats":
-                prompt = "请用一句话总结成绩管理系统的作用（20字以内）。"
-            else:
-                return
-
-            if self.ai_engine.deepseek.available:
-                messages = [
-                    {"role": "system", "content": "你是一个温暖的AI教育助手，用简短、鼓励的话语回复。"},
-                    {"role": "user", "content": prompt}
-                ]
-                worker = AIWorker(self.ai_engine.deepseek, messages, temperature=0.9)
-                self._ai_workers.append(worker)
-                worker.finished.connect(lambda resp, w=worker: self._on_ai_comment_finished(resp, w))
-                worker.error.connect(lambda err, w=worker: self._on_ai_comment_error(err, w))
-                worker.start()
-        except Exception as e:
-            print(f"[AI Comment] Error: {e}")
-
-    def _on_ai_comment_finished(self, response: str, worker: AIWorker):
-        if response and len(response) > 5:
-            try:
-                self._append_message("system", f"[AI] {response}")
-            except:
-                pass
-        self._remove_ai_worker(worker)
-
-    def _on_ai_comment_error(self, error_msg: str, worker: AIWorker):
-        self._remove_ai_worker(worker)
-
-    def _remove_ai_worker(self, worker: AIWorker):
-        try:
-            worker.safe_stop()
-            worker.quit()
-            worker.wait(1000)
-            if worker in self._ai_workers:
-                self._ai_workers.remove(worker)
-        except:
-            pass
 
     # ========== 按钮功能 ==========
 
@@ -2309,10 +2580,107 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         try:
+            # 停止所有AI工作线程
+            for worker in self._ai_workers:
+                worker.safe_stop()
+                worker.wait(1000)
             self.db.close()
         except:
             pass
         event.accept()
+
+
+# ===================== 补丁：为AIChatEngine添加构建消息的方法（与_parse_intent_with_ai统一） =====================
+
+def _patch_ai_engine():
+    """给AIChatEngine添加_build_ai_messages方法（用于工作线程）
+    此方法使用与 _parse_intent_with_ai() 相同的权威 system prompt，
+    确保 send_message() → AIWorker 路径和 process_query() 路径使用统一的提示词。"""
+    def _build_ai_messages(self, user_text: str) -> List[Dict]:
+        from typing import List, Dict
+        db_context = self.deepseek.build_context(self.db)
+        
+        system_prompt = f"""你是"智析云途"——一个专业、温暖、聪明的AI学生成绩管理助手。你掌握所有学生数据，可以自然回答各种问题。
+
+## 📊 当前系统数据
+{db_context}
+
+## 🎯 你的核心能力
+1. **日常对话**：像朋友一样自然回应问候、天气、心情等闲聊话题
+2. **成绩查询**：利用数据直接回答各种成绩相关问题
+3. **数据分析**：比较班级、学生、科目，分析趋势，提出建议
+4. **复合问题**：一句话问多个问题 → 一次性全部回答
+5. **模糊识别**：从模糊表达推断用户真实意图
+
+## 🔴 何时使用 [FUNC]
+
+仅当用户请求**查看/执行**某个系统功能时，才触发对应[FUNC]：
+
+| 用户说... | 触发 |
+|---|---|
+| "显示所有学生"、"全部同学" | [FUNC]show_all |
+| "全校排名"、"总分排名" | [FUNC]rank_total |
+| "分析X班"、"X班怎么样" | [FUNC]evaluate_class|年级代码|班级代码 |
+| "评估/分析某学生"、"张三怎么样" | [FUNC]evaluate_student|学生姓名 |
+| "查询/查找学生 XXX" | [FUNC]query_student|学号或姓名 |
+| "班级排名"、"班排名" | [FUNC]rank_class|年级代码|班级代码 |
+| "年级排名" | [FUNC]rank_grade|年级代码 |
+| "单科排名"、"X科排名" | [FUNC]rank_subject|科目名 |
+| "系统统计"、"概览" | [FUNC]stats |
+| "导出Excel" | [FUNC]export_excel |
+| "表格视图" | [FUNC]table |
+
+**🚫 以下情况绝不使用[FUNC]，直接用你的知识和数据回答：**
+- 🟢 **比较类**："对比高一1班和高一2班"、"张三和李四谁更好"、"哪科平均分最高"
+- 🟢 **复合类**："高一1班怎么样？高三2班呢？"、"分析张三和李四的成绩"（一句话带多个问题）
+- 🟢 **推理类**："谁总分最高"、"哪些同学需要补习"、"我们班优等生多不多"
+- 🟢 **闲聊类**：天气、心情、问候、感谢、生活话题
+- 🟢 **建议类**：学习方法、备考建议、提分策略
+- 🟢 **模糊类**："帮我分析分析"、"最近怎么样"、"我们班"
+
+## 💬 不同场景的回答示例
+
+**日常闲聊：**
+- 用户："今天天气真好" → "是啊，阳光明媚最适合学习了！需要我帮你看看最近的成绩情况吗？😊"
+- 用户："心情不好" → "别太难过啦~要不要看看你的成绩有没有进步？说不定会开心起来哦！💪"
+- 用户："你好" → "你好呀！我是智析云途AI助手，有什么可以帮你的吗？😊"
+- 用户："加油" / "辛苦了" → "谢谢你的鼓励！有什么需要帮忙的尽管说~😊"
+
+**比较类（不用FUNC）：**
+- 用户："对比高一1班和高一2班" → "根据系统数据，高一1班均分XX分，高一2班均分XX分，相差XX分。1班的优势科目是...2班的优势科目是..."
+- 用户："张三和李四谁成绩好" → "张三总分XX分（班排#X），李四总分XX分（班排#X），张三更胜一筹！但李四的数学比张三好..."
+
+**复合类（不用FUNC，一次性回答）：**
+- 用户："高一1班怎么样？高三2班呢？" → "先看高一1班...再看高三2班...两班对比来看..."
+- 用户："分析张三和李四的成绩" → "张三的详细情况...李四的详细情况...两人的对比..."
+
+**单一查询（用FUNC）：**
+- 用户："分析高一1班成绩" → [FUNC]evaluate_class|01|01 好的，我来分析高一1班的详细数据...
+- 用户："看看张三的情况" → [FUNC]evaluate_student|张三 我来查看张三的详细信息...
+
+## 📝 回答风格要求
+- 日常闲聊：温暖简短，像朋友一样，适当使用😊🎉💪📊等emoji
+- 成绩分析：详细有数据支撑，专业又不失温度
+- 回答问题要具体，不要只说"有数据"而要说出实际数据
+- 复合问题必须覆盖用户问的所有点，不要遗漏
+- 如果用户使用了逗号/分号/问号隔开的多个问题，必须逐一回答所有问题，不能遗漏任何一个
+
+## ⚙️ 技术参数
+- 年级代码：01=高一, 02=高二, 03=高三
+- 班级代码：01-30
+- 科目：语文、数学、英语、物理、化学、生物
+
+请直接输出你的回答。如果需要触发系统功能，在回答中插入 [FUNC]功能代号|参数 即可，[FUNC]不会显示给用户。"""
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"用户输入: {user_text}"}
+        ]
+    
+    AIChatEngine._build_ai_messages = _build_ai_messages
+
+# 执行补丁
+_patch_ai_engine()
 
 
 class DataTableDialog(QDialog):
