@@ -2495,8 +2495,12 @@ class MainWindow(QMainWindow):
             if dialog.exec_() == QDialog.Accepted and dialog.result_params:
                 gy, cn = dialog.result_params
                 gn = GRADE_NAMES.get(gy, gy)
-                self.input_box.setText(f"{gn}{cn}班排名")
-                self.send_message()
+                # 直接获取班级排名数据并显示，不依赖AI解析
+                result_data = self._execute_function("rank_class", (gy, cn), "")
+                if result_data:
+                    self._append_message("system", f"📋 [班级排名]\n{result_data}")
+                else:
+                    self._append_message("system", f"{gn}{cn}班暂无数据")
             return
         except Exception as e:
             print(f"[RankSelectDialog.class] Error: {e}")
@@ -2509,8 +2513,12 @@ class MainWindow(QMainWindow):
             if dialog.exec_() == QDialog.Accepted and dialog.result_params:
                 gy = dialog.result_params
                 gn = GRADE_NAMES.get(gy, gy)
-                self.input_box.setText(f"{gn}年级排名")
-                self.send_message()
+                # 直接获取年级排名数据并显示，不依赖AI解析
+                result_data = self._execute_function("rank_grade", gy, "")
+                if result_data:
+                    self._append_message("system", f"📋 [年级排名]\n{result_data}")
+                else:
+                    self._append_message("system", f"{gn}暂无数据")
             return
         except Exception as e:
             print(f"[RankSelectDialog.grade] Error: {e}")

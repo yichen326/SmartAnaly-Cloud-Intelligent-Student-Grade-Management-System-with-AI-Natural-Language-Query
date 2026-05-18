@@ -62,11 +62,12 @@
 
 | 排名类型 | 描述 |
 |----------|------|
-| **班级排名** | 班级内总分/单科排名，显示等级与平均分 |
+| **班级排名** | 班级内总分排名，显示等级与平均分 |
 | **年级排名** | 全年级总分排名，跨班级对比 |
 | **全校排名** | 全校范围内的总分排名 |
+| **单科排名** | 按科目维度全校/班级排名 |
 
-> 每次数据变更后自动更新所有排名。
+> 每次数据变更后自动更新所有排名。排名按钮均为独立数据通道，不依赖AI引擎，确保始终可用。
 
 ### 🤖 AI智能分析
 
@@ -306,11 +307,13 @@ dist/
 |------|------|
 | 📋 **显示全部** | 查看所有学生成绩 |
 | 🏆 **总分排名** | 全校总分排行 |
-| 📊 **班级排名** | 选择班级后显示排名 |
-| 📈 **年级排名** | 选择年级后显示排名 |
+| 📊 **班级排名** | 弹出对话框选择年级/班级后直接显示排名数据（独立数据通道） |
+| 📈 **年级排名** | 弹出对话框选择年级后直接显示排名数据（独立数据通道） |
 | 📤 **导出Excel** | 导出为 `.xlsx` 文件 |
 | 📑 **表格视图** | 打开独立编辑表格窗口 |
 | 📖 **菜单** | 显示完整功能菜单 |
+
+> 💡 **班级排名/年级排名 按钮**：采用独立数据通道，弹出选择对话框后直接调用 `_execute_function()` 从数据库查询并显示排名数据，不经过AI引擎解析，确保不受AI服务状态影响，始终能够读取和显示数据。
 
 ### 📊 数据表格操作
 
@@ -367,6 +370,51 @@ CREATE TABLE students (
     grade_rank   INTEGER DEFAULT -1,          -- 年级排名
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- 创建时间
 );
+```
+
+### 关键代码解析
+
+#### 快速按钮 → 独立数据通道模式
+
+主界面顶部的「班级排名」「年级排名」按钮采用 **独立数据通道**，不经过AI引擎：
+
+```python
+def show_rank_class(self):
+    dialog = RankSelectDialog(self.db, 'class', self)
+    if dialog.exec_() == QDialog.Accepted and dialog.result_params:
+        gy, cn = dialog.result_params
+        # 直接调用 _execute_function 获取数据，不依赖AI
+        result_data = self._execute_function("rank_class", (gy, cn), "")
+        if result_data:
+            self._append_message("system", f"📋 [班级排名]\n{result_data}")
+```
+
+这种设计确保即使DeepSeek API服务不可用，排名功能始终能正常读取和显示数据。
+
+#### AI双路径路由设计
+
+```python
+def process_query(self, user_input):
+    # 1. 快速路径：try_direct_match() 处理菜单/退出等固定指令
+    result = self.try_direct_match(user_raw)
+    if result and result[1] is not None:
+        return result
+    
+    # 2. AI路径：所有自然语言走 _parse_intent_with_ai()
+    result = self._parse_intent_with_ai(user_raw, ...)
+    if result:
+        return result
+```
+
+#### Context-as-Data 模式
+
+```python
+def build_context(self, db):
+    # 将每位学生的详细成绩、等级、排名嵌入到AI上下文中
+    all_students = db.fetchall("SELECT * FROM students ORDER BY ...")
+    for stu in all_students:
+        lines.append(f"{stu['name']}: 语文{stu['chinese']}分，...")
+    # AI可以直接回答"张三和李四谁成绩好"等比较问题
 ```
 
 ### 扩展建议
