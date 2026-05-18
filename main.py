@@ -75,7 +75,7 @@ def _load_config() -> dict:
     import os as _os
     _defaults = {
         "deepseek": {
-            "api_key": "sk-032f75440f6542d690f9ccc523b01cd3",
+            "api_key": "",#填写deepseekapi密钥
             "api_url": "https://api.deepseek.com/v1/chat/completions",
             "model": "deepseek-v4-flash"
         },
